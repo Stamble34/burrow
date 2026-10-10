@@ -15,3 +15,6 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+# extension build output
+extension/web-ext-artifacts/
+*.xpi
