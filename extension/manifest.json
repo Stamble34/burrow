@@ -1,0 +1,45 @@
+{
+  "manifest_version": 2,
+  "name": "Burrow",
+  "version": "1.0.0",
+  "description": "Send the page or a link to Burrow as a prerequisite of the card you're working on.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "notifications",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "browser_action": {
+    "default_title": "Add this page to Burrow (Alt+Shift+B)",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "commands": {
+    "capture-page": {
+      "suggested_key": {
+        "default": "Alt+Shift+B"
+      },
+      "description": "Add this page to Burrow"
+    }
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "{81f5643b-abb8-4868-9aae-6ba042f40208}",
+      "strict_min_version": "109.0"
+    }
+  }
+}

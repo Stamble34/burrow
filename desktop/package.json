@@ -1,0 +1,14 @@
+{
+  "name": "burrow-desktop",
+  "productName": "Burrow",
+  "version": "1.0.0",
+  "description": "Map the rabbit hole: prerequisite cards for learning theory-heavy topics.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  }
+}

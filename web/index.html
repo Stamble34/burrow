@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Burrow</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar" id="topbar">
+      <div class="tb-left">
+        <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-logo"/></svg></div>
+        <button class="board-btn" id="boardBtn" title="Switch board">
+          <span id="boardName">Board</span>
+          <svg class="chev" viewBox="0 0 24 24"><use href="#i-chev"/></svg>
+        </button>
+        <div class="progress" id="progress" title="Cards understood on this board">
+          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+          <span id="progressText">0 of 0</span>
+        </div>
+      </div>
+      <div class="tb-center">
+        <button class="focus-chip" id="focusChip" title="New captures from the browser are added under this card">
+          <svg viewBox="0 0 24 24"><use href="#i-target"/></svg>
+          <span class="focus-label">Capturing under</span>
+          <span class="focus-title" id="focusTitle"></span>
+        </button>
+      </div>
+      <div class="tb-right">
+        <button class="tb-btn search-btn" id="searchBtn" title="Search and commands">
+          <svg viewBox="0 0 24 24"><use href="#i-search"/></svg>
+          <span>Search</span>
+          <kbd>Ctrl</kbd><kbd>K</kbd>
+        </button>
+        <button class="tb-btn icon-only" id="accentBtn" title="Accent color"><span class="accent-dot"></span></button>
+        <button class="tb-btn icon-only" id="helpBtn" title="Keyboard shortcuts (?)"><svg viewBox="0 0 24 24"><use href="#i-keyboard"/></svg></button>
+        <div class="win-controls" id="winControls" hidden>
+          <button data-win="minimize" title="Minimize"><svg viewBox="0 0 24 24"><use href="#i-min"/></svg></button>
+          <button data-win="maximize" title="Maximize"><svg viewBox="0 0 24 24"><use href="#i-max"/></svg></button>
+          <button data-win="close" class="close" title="Close"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+        </div>
+      </div>
+    </header>
+
+    <main id="viewport" tabindex="-1">
+      <div id="world">
+        <svg id="links" aria-hidden="true">
+          <g id="linkLayer"></g>
+          <path id="tempLink" class="temp-link" d=""/>
+        </svg>
+        <div id="cards"></div>
+      </div>
+      <div id="marquee" hidden></div>
+      <div class="empty" id="empty" hidden>
+        <h1>What do you want to understand?</h1>
+        <p>Double-click anywhere or press <kbd>N</kbd> to add the topic you started with. Press <kbd>Tab</kbd> on a card when you hit something you need to learn first.</p>
+      </div>
+    </main>
+
+    <nav class="crumbs" id="trail" aria-label="Path back to the topic you started from"></nav>
+
+    <div class="hud" id="hud">
+      <button id="zoomOut" title="Zoom out"><svg viewBox="0 0 24 24"><use href="#i-minus"/></svg></button>
+      <button id="zoomLabel" title="Reset zoom">100%</button>
+      <button id="zoomIn" title="Zoom in"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg></button>
+      <span class="hud-sep"></span>
+      <button id="fitBtn" title="Fit board (F)"><svg viewBox="0 0 24 24"><use href="#i-fit"/></svg></button>
+    </div>
+
+    <div class="conn" id="conn" hidden><span class="conn-dot"></span><span id="connText">Reconnecting to Burrow service</span></div>
+
+    <!-- Command palette -->
+    <div class="overlay" id="paletteOverlay" hidden>
+      <div class="palette" role="dialog" aria-label="Search and commands">
+        <div class="palette-input">
+          <svg viewBox="0 0 24 24"><use href="#i-search"/></svg>
+          <input id="paletteInput" placeholder="Search cards, boards and commands" autocomplete="off" spellcheck="false">
+          <span class="palette-scope" id="paletteScope" hidden></span>
+        </div>
+        <div class="palette-list" id="paletteList" role="listbox"></div>
+        <div class="palette-foot">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Move</span>
+          <span><kbd>↵</kbd> Open</span>
+          <span><kbd>Esc</kbd> Close</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Details panel -->
+    <aside class="details" id="details" hidden>
+      <div class="details-head">
+        <div class="seg" id="statusSeg">
+          <button data-status="todo"><span class="sdot s-todo"></span>To learn</button>
+          <button data-status="doing"><span class="sdot s-doing"></span>Learning</button>
+          <button data-status="done"><span class="sdot s-done"></span>Understood</button>
+        </div>
+        <button class="icon-btn" id="detailsClose" title="Close (Esc)"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+      </div>
+      <textarea id="dTitle" class="d-title" rows="1" placeholder="Topic" spellcheck="false"></textarea>
+      <label class="d-label" for="dUrl">Source</label>
+      <div class="d-url">
+        <input id="dUrl" placeholder="Paste a link" spellcheck="false">
+        <button class="icon-btn" id="dOpen" title="Open link (O)"><svg viewBox="0 0 24 24"><use href="#i-ext"/></svg></button>
+      </div>
+      <label class="d-label" for="dNote">Notes</label>
+      <textarea id="dNote" class="d-note" placeholder="What clicked, what's still fuzzy…"></textarea>
+      <div class="d-rel" id="dRel"></div>
+    </aside>
+
+    <!-- Context menu -->
+    <div class="menu" id="menu" hidden></div>
+
+    <!-- Accent picker -->
+    <div class="popover" id="accentPop" hidden>
+      <div class="pop-title">Accent color</div>
+      <div class="swatches" id="swatches"></div>
+      <label class="custom-color"><input type="color" id="accentCustom"><span>Custom color</span></label>
+    </div>
+
+    <!-- Help -->
+    <div class="overlay" id="helpOverlay" hidden>
+      <div class="help" role="dialog" aria-label="Keyboard shortcuts">
+        <div class="help-head"><h2>Keyboard shortcuts</h2><button class="icon-btn" id="helpClose"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button></div>
+        <div class="help-grid" id="helpGrid"></div>
+      </div>
+    </div>
+
+    <div class="toasts" id="toasts"></div>
+  </div>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-logo" viewBox="0 0 24 24"><path d="M4 18c0-5 3.6-9 8-9s8 4 8 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="18" r="2.4" fill="currentColor"/><path d="M12 9V4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></symbol>
+      <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17 10h.01M8 14h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-min" viewBox="0 0 24 24"><path d="M6 12h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-max" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6 12h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 5h5v5M19 5l-8 8M17 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M5.5 12.5l4 4 9-9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-board" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 9.5h16" stroke="currentColor" stroke-width="1.8"/></symbol>
+      <symbol id="i-card" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+      <symbol id="i-cmd" viewBox="0 0 24 24"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 4h9l4 4v12H6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    </defs>
+  </svg>
+
+  <script src="shared.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
