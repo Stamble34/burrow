@@ -1114,6 +1114,7 @@
       ['Go up, down and across the map', ['↑', '↓', '←', '→']],
       ['Search and commands', ['Ctrl', 'K']],
       ['Switch board', ['Ctrl', 'B']],
+      ['Rename board', ['⇧', 'F2'], 'or double-click its name'],
       ['Fit board', ['F']],
       ['Center selected card', ['C']],
       ['Open card link', ['O']],
@@ -1156,7 +1157,7 @@
       case 'Tab': handled(); return addPrerequisite(p || trailAnchor());
       case 'Enter': handled(); return p ? addSibling(p) : newCardHere();
       case 'n': case 'N': handled(); return newCardHere();
-      case 'F2': handled(); return p && startEdit(p);
+      case 'F2': handled(); return e.shiftKey ? openPalette('renameboard') : p && startEdit(p);
       case 'e': case 'E': handled(); return p && openDetails(p);
       case ' ': handled(); return ids.length && cycleStatus(ids);
       case '1': return ids.length && setStatus(ids, 'todo');
@@ -1265,7 +1266,7 @@
       { label: 'Fit board', keys: ['F'], run: () => fitBoard() },
       { label: 'Switch board', keys: ['Ctrl', 'B'], run: () => setTimeout(() => openPalette('boards'), 0) },
       { label: 'New board', run: () => setTimeout(() => openPalette('newboard'), 0) },
-      { label: 'Rename board', run: renameBoard },
+      { label: 'Rename board', keys: ['⇧', 'F2'], run: () => setTimeout(() => openPalette('renameboard'), 0) },
       { label: 'Delete board', run: deleteBoard },
       { label: 'Copy board as Markdown outline', run: copyOutline },
       { label: 'Change accent color', run: () => setTimeout(openAccent, 0) },
@@ -1300,10 +1301,14 @@
     const statusIcon = (s) => `<span class="sdot s-${s}"></span>`;
     if (pal.mode === 'newboard') {
       groups.push(['', [{ label: raw ? `Create board “${raw}”` : 'Type a name for the new board', icon: icon('plus'), run: () => raw && newBoard(raw) }]]);
+    } else if (pal.mode === 'renameboard') {
+      const id = pal.renameId; const b = state.boards[id];
+      groups.push(['', [{ label: raw ? `Rename to “${raw}”` : 'Type a new name for the board', sub: b ? `now “${b.name}”` : '', keys: ['Enter'], icon: icon('board'), run: () => raw && renameBoard(id, raw) }]]);
     } else if (pal.mode === 'boards') {
       const bs = Object.values(state.boards).map((b) => ({ b, s: score(b.name, q) })).filter((x) => x.s > 0).sort((a, z) => z.s - a.s || a.b.createdAt - z.b.createdAt);
       groups.push(['Boards', bs.map(({ b }) => boardItem(b, q))]);
       if (raw) groups.push(['', [{ label: `Create board “${raw}”`, icon: icon('plus'), run: () => newBoard(raw) }]]);
+      else groups.push(['', [{ label: 'Rename board', keys: ['F2'], icon: icon('cmd'), run: () => setTimeout(() => openPalette('renameboard'), 0) }]]);
     } else {
       if (q) {
         const here = boardId();
@@ -1343,7 +1348,7 @@
 
   function boardItem(b, q) {
     const cs = cardsOn(b.id); const done = cs.filter((c) => c.status === 'done').length;
-    return { kind: 'board', label: b.name, html: highlight(b.name, q), icon: icon('board'), sub: `${done} of ${cs.length} understood${b.id === boardId() ? ', current' : ''}`, run: () => switchBoard(b.id) };
+    return { kind: 'board', boardId: b.id, label: b.name, html: highlight(b.name, q), icon: icon('board'), sub: `${done} of ${cs.length} understood${b.id === boardId() ? ', current' : ''}`, run: () => switchBoard(b.id) };
   }
 
   function paintActive() {
@@ -1352,16 +1357,19 @@
     const a = nodes[pal.active]; if (a) a.scrollIntoView({ block: 'nearest' });
   }
 
-  function openPalette(mode = 'all') {
+  function openPalette(mode = 'all', renameId = boardId()) {
     commitEdit(); closeMenus();
     pal.mode = mode;
+    pal.renameId = renameId;
     pal.overlay.hidden = false;
-    pal.input.value = '';
-    pal.input.placeholder = mode === 'boards' ? 'Find or create a board' : mode === 'newboard' ? 'Name the new board' : 'Search cards, boards and commands';
+    const renaming = mode === 'renameboard' && state.boards[renameId];
+    pal.input.value = renaming ? renaming.name : '';
+    pal.input.placeholder = mode === 'boards' ? 'Find or create a board' : mode === 'newboard' ? 'Name the new board' : mode === 'renameboard' ? 'New board name' : 'Search cards, boards and commands';
     pal.scope.hidden = mode === 'all';
-    pal.scope.textContent = mode === 'boards' ? 'Boards' : mode === 'newboard' ? 'New board' : '';
+    pal.scope.textContent = mode === 'boards' ? 'Boards' : mode === 'newboard' ? 'New board' : mode === 'renameboard' ? 'Rename board' : '';
     buildPalette();
     pal.input.focus();
+    if (renaming) pal.input.select();
   }
   function closePalette() { pal.overlay.hidden = true; els.viewport.focus({ preventScroll: true }); }
 
@@ -1371,6 +1379,7 @@
     else if (e.key === 'ArrowUp' || (e.key === 'p' && e.ctrlKey)) { e.preventDefault(); pal.active = Math.max(0, pal.active - 1); paintActive(); }
     else if (e.key === 'Enter') { e.preventDefault(); const it = pal.items[pal.active]; closePalette(); if (it) it.run(); }
     else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
+    else if (e.key === 'F2' && pal.mode !== 'renameboard') { e.preventDefault(); const it = pal.items[pal.active]; openPalette('renameboard', it && it.kind === 'board' ? it.boardId : boardId()); }
     else if (e.key === 'Backspace' && !pal.input.value && pal.mode !== 'all') { pal.mode = 'all'; pal.scope.hidden = true; pal.input.placeholder = 'Search cards, boards and commands'; buildPalette(); }
     e.stopPropagation();
   });
@@ -1408,20 +1417,11 @@
     switchedBoard();
     toast(`Created board “${b.name}”`);
   }
-  function renameBoard() {
-    const span = els.boardName; const b = board(); if (!b) return;
-    span.contentEditable = 'true'; span.spellcheck = false; span.focus();
-    document.getSelection().selectAllChildren(span);
-    const done = (save) => {
-      span.contentEditable = 'false';
-      const name = span.textContent.replace(/\s+/g, ' ').trim();
-      if (save && name && name !== b.name) commit([{ t: 'board.put', board: { id: b.id, name: name.slice(0, 80) } }]);
-      else span.textContent = b.name;
-      span.onkeydown = span.onblur = null;
-      els.viewport.focus({ preventScroll: true });
-    };
-    span.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); done(true); } if (e.key === 'Escape') done(false); };
-    span.onblur = () => done(true);
+  function renameBoard(id, name) {
+    const b = state.boards[id]; name = name.replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!b || !name || name === b.name) return;
+    commit([{ t: 'board.put', board: { id, name } }]);
+    toast(`Renamed board to “${name}”`);
   }
   function deleteBoard() {
     const b = board(); if (!b) return;
@@ -1504,7 +1504,11 @@
 
   // ---------- chrome wiring ----------
   els.boardBtn.addEventListener('click', () => openPalette('boards'));
-  els.boardBtn.addEventListener('dblclick', (e) => { e.preventDefault(); renameBoard(); });
+  // The first click opens the board list, whose backdrop covers the button, so the second click of a double-click lands there.
+  pal.overlay.addEventListener('mousedown', (e) => {
+    const r = els.boardBtn.getBoundingClientRect();
+    if (e.detail === 2 && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) { e.preventDefault(); openPalette('renameboard'); }
+  });
   $('#searchBtn').addEventListener('click', () => openPalette());
   els.focusChip.addEventListener('click', () => { const f = board() && board().focusId; if (f && state.cards[f]) { selectOnly(f); centerOn(f); } });
   els.trail.addEventListener('click', (e) => { const b = e.target.closest('button[data-id]'); if (b) { selectOnly(b.dataset.id); centerOn(b.dataset.id); } });
