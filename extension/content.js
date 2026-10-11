@@ -72,6 +72,12 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const keyHtml = (k) => (k ? String(k).split('+').map((x) => `<kbd>${esc(x)}</kbd>`).join('') : '');
 
+  // ---------- palette ----------
+  const palette = window.BurrowPalette.mount(root, {
+    query: (q) => browser.runtime.sendMessage({ t: 'paletteQuery', q }),
+    run: (item) => browser.runtime.sendMessage({ t: 'paletteRun', item }),
+  });
+
   // ---------- breadcrumb ----------
   const fullscreen = () => !!document.fullscreenElement || matchMedia('(display-mode: fullscreen)').matches;
   function renderPill() {
@@ -292,6 +298,7 @@
     else if (m.t === 'prompt') showPrompt(m);
     else if (m.t === 'toast') showToast(m);
     else if (m.t === 'restore') restore(m.anchor);
+    else if (m.t === 'palette') palette.isOpen ? palette.close() : palette.open();
   });
   port.onDisconnect.addListener(() => host.remove());
 })();

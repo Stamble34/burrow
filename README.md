@@ -102,6 +102,9 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
 - **Pick up where you were.** Leaving a bound tab remembers how far down you'd read. When the page is reopened later (from the breadcrumb or the app), it scrolls back there.
   - On pages where extensions can't draw (PDFs, `about:` pages, addons.mozilla.org), the toolbar icon shows the depth instead, and the prompt opens as a small window.
 - **Undo anything.** `Alt+Shift+Z` undoes the last Burrow change, and `Alt+Shift+Y` redoes it. The app and the browser share one history, so `Ctrl+Z` in the app undoes a page added in the browser and vice versa. Undoing an add also unbinds the tab.
+- **Find anything.** `Alt+Shift+K` opens the Burrow palette over the page: type to jump to any card (its tab, or its page reopened), make a card under this one, or run any of the commands below. In the address bar, `bw` then a space searches cards too.
+- **See the whole map.** `Alt+Shift+O` opens the outline in Zen's sidebar: the board you're on as a tree, the card for this tab highlighted, open ones marked with a dot. Click a card to go to it.
+- **Focus mode** (off by default; preferences or the palette): tabs on the map that aren't on your current trail, next to the card you're on, or under it get hidden, or unloaded if you prefer. Turning it off brings them all back.
 - After a browser restart, tabs find their cards again.
 - Clicking a card's link in the app switches to the tab that already shows that page, instead of opening another one. If it isn't open, it opens in a new tab tied to the card, and Zen comes to the front. Without the extension, links open in a new tab as before.
 
@@ -113,12 +116,15 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
 | `Alt+Shift+U` | Up to the card that needs this one |
 | `Alt+Shift+P` | Park it, go up |
 | `Alt+Shift+X` | Not related: remove this page's card |
+| `Alt+Shift+K` | Palette: jump to a card, make one, run a command |
+| `Alt+Shift+O` | Outline in the sidebar |
+| `bw` + space in the address bar | Search cards |
 | `Alt+Shift+Z` / `Alt+Shift+Y` | Undo / redo |
 | `Alt+Shift+H` | Show or hide the breadcrumb |
 
 Some sites use `Alt+Shift` letters for their own shortcuts (on Wikipedia `Alt+Shift+P` prints). On pages Burrow can draw on, its shortcuts win. Right-click a link and choose **Add link to Burrow** to add it without opening it.
 
-To stop the prompts and only add pages with the shortcut, or to search with something other than Google, open the extension's preferences (`about:addons` → Burrow → Preferences).
+To stop the prompts and only add pages with the shortcut, to search with something other than Google, or to turn on focus mode, open the extension's preferences (`about:addons` → Burrow → Preferences).
 
 ## Installing the Zen extension
 

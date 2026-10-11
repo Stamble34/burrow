@@ -20,6 +20,7 @@ The browser extension is the main interface: the user lives in Zen, and the app/
     - `POST /api/open` (the app opens a link through the extension, which reuses an open tab; `routed: false` when the extension isn't connected, and the app opens a tab itself)
     - `POST /api/anchor` (save a page's return anchor; not undoable)
     - `POST /api/resolve`, `POST /api/effects` (see the extension's resolve flow)
+    - `POST /api/outline` (a board as a tree), `POST /api/search` (cards across boards)
     - `POST /api/preview` (what the confirm prompt says), `POST /api/source` (add a source to a card), `POST /api/crumbs` (breadcrumb trails), `POST /api/match` (cards for URLs, after a browser restart), `GET|POST /api/tabs`
     - `GET /api/title?url=` (fetches a page title)
     - `GET /capture` (bookmarklet page)
@@ -45,7 +46,10 @@ The browser extension is the main interface: the user lives in Zen, and the app/
   - Dive (`Alt+Shift+S`, context menus): `dive()` opens the search/link tab, then `/api/capture` with `exactTitle`, `context` and effects `opened` (undo closes the tab, redo reopens it; `S.alias` maps the old tab id to the new one), `bind` and `activated` (undo goes back to the origin tab). Search pages are never sources (`isSearchUrl` in the service). Engine is a setting (`ENGINES`), Google by default.
   - Resolve (`resolveTab`): `/api/resolve {cardId, action: done|park|unrelated}` records the change and returns `next` (an unfinished sibling, open ones first, else the parent) and `parentReady`; the extension activates or reopens `next`, closes the tab, then attaches `opened`/`bind`/`activated`/`closed` effects to the same entry with `/api/effects`. `closed` is undone with `sessions.restore` (found by URL in `getRecentlyClosed`) and rebinds the new tab id via `S.alias`. "Not related" deletes the card only when `binding.created` (this tab made it); otherwise it records an `unbind` effect only.
   - `content.js`: breadcrumb pill (with the "From …" context line on hover), confirm prompt and toasts in one closed Shadow DOM; `grab` (selection or link + its sentence + a text-fragment URL) for dives; reports the return anchor on `visibilitychange` → hidden and restores it (`restore`: find the saved words nearest the saved scroll, else the scroll). It never talks to 127.0.0.1 itself.
-  - `prompt.html`: the confirm prompt as a popup window, for pages without content scripts. `options.html`: prompt on/off, breadcrumb on/off.
+  - `prompt.html`: the confirm prompt as a popup window, for pages without content scripts. `options.html`: prompt, breadcrumb, search engine, focus mode.
+  - `palette-ui.js`: the palette component (`BurrowPalette.mount`), loaded before content.js in pages and by `palette.html` (popup for pages without content scripts). Items come from `paletteItems()` in the background (`/api/search` + "make a card" + `COMMANDS`).
+  - `sidebar.html/js`: the outline (`/api/outline` for the active tab's board), fed over a `sidebar` port by `pushOutline()`. Opened with `_execute_sidebar_action`; that shortcut is left out of the keymap content.js intercepts, because `sidebarAction.open` only works from the browser's own shortcut handling.
+  - Omnibox keyword `bw`. Focus mode (`applyFocus`): `tabs.hide`/`tabs.discard` on bound tabs off the trail; `S.hidden` remembers what Burrow hid, and `activate()` shows a hidden tab before switching to it.
 - `install.sh`: copies the app to `~/.local/share/burrow/app`, sets up the systemd user unit `burrow.service` and the `.desktop` entry.
 
 ## Working on it

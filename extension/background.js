@@ -6,7 +6,7 @@
 // The service (service/server.js) does the map logic; this file is browser glue.
 const API = 'http://127.0.0.1:7417';
 const CLIENT = 'ext-' + Math.random().toString(36).slice(2, 10);
-const DEFAULT_SETTINGS = { prompt: true, crumb: true, engine: 'google' };
+const DEFAULT_SETTINGS = { prompt: true, crumb: true, engine: 'google', focus: 'off' };
 const ENGINES = {
   google: 'https://www.google.com/search?q=',
   duckduckgo: 'https://duckduckgo.com/?q=',
@@ -18,7 +18,7 @@ const searchUrl = (q) => (ENGINES[S.settings.engine] || ENGINES.google) + encode
 // ---------- persisted state ----------
 // Tab ids are only valid until the browser restarts, so this is rebuilt on startup (see rebind()).
 // alias: a tab closed by undo and reopened by redo gets a new id; effects keep the old one.
-let S = { bindings: {}, pending: {}, asked: {}, prefer: {}, alias: {}, settings: { ...DEFAULT_SETTINGS } };
+let S = { bindings: {}, pending: {}, asked: {}, prefer: {}, alias: {}, hidden: {}, settings: { ...DEFAULT_SETTINGS } };
 const ready = browser.storage.local.get('burrow').then((r) => {
   if (r.burrow) S = { ...S, ...r.burrow, settings: { ...DEFAULT_SETTINGS, ...(r.burrow.settings || {}) } };
 });
@@ -63,6 +63,11 @@ function unbind(tabId) {
   browser.browserAction.setBadgeText({ tabId, text: '' }).catch(() => {});
   save(); pushTabs(); refresh();
 }
+// Switch to a tab, first showing it if focus mode hid it.
+async function activate(tabId) {
+  if (S.hidden[tabId]) { await browser.tabs.show(tabId).catch(() => {}); delete S.hidden[tabId]; save(); }
+  return browser.tabs.update(tabId, { active: true });
+}
 const tabOfCard = (cardId) => Object.keys(S.bindings).map(Number).find((t) => S.bindings[t].cardId === cardId);
 
 let pushT = null;
@@ -78,7 +83,7 @@ function pushTabs() {
 // After a browser restart tab ids are new: find each tab's card from the value stored on the tab
 // (survives session restore), or else from its URL.
 async function rebind() {
-  S.bindings = {}; S.pending = {}; S.asked = {};
+  S.bindings = {}; S.pending = {}; S.asked = {}; S.hidden = {};
   const tabs = await browser.tabs.query({});
   const unknown = [];
   for (const t of tabs) {
@@ -109,7 +114,7 @@ function openedFrom(tabId, openerId) {
 browser.tabs.onCreated.addListener((tab) => { if (tab.openerTabId != null) ready.then(() => openedFrom(tab.id, tab.openerTabId)); });
 browser.webNavigation.onCreatedNavigationTarget.addListener((d) => ready.then(() => openedFrom(d.tabId, d.sourceTabId)));
 
-browser.tabs.onActivated.addListener(({ tabId }) => ready.then(() => { maybePrompt(tabId); pushTabs(); }));
+browser.tabs.onActivated.addListener(({ tabId }) => ready.then(() => { maybePrompt(tabId); pushTabs(); pushOutline(); }));
 
 browser.tabs.onUpdated.addListener((tabId, ch, tab) => ready.then(() => {
   const b = S.bindings[tabId];
@@ -127,7 +132,7 @@ browser.tabs.onUpdated.addListener((tabId, ch, tab) => ready.then(() => {
 
 browser.tabs.onRemoved.addListener((tabId) => ready.then(() => {
   const had = S.bindings[tabId];
-  delete S.bindings[tabId]; delete S.pending[tabId]; delete S.asked[tabId];
+  delete S.bindings[tabId]; delete S.pending[tabId]; delete S.asked[tabId]; delete S.hidden[tabId];
   save();
   if (had) pushTabs();
 }));
@@ -176,10 +181,10 @@ async function answerPrompt(tabId, choice) {
 
 // ---------- adding pages ----------
 // tabId: the tab showing this page, which becomes bound to the card (null for a link that isn't open).
-async function addPage(tabId, { url, title, parentId, sibling }, toastTab = tabId) {
+async function addPage(tabId, { url, title, parentId, sibling, exactTitle }, toastTab = tabId) {
   let r;
   try {
-    r = await api('/api/capture', { url, title, parentId, sibling, effects: tabId != null ? [{ kind: 'bind', tabId }] : [] });
+    r = await api('/api/capture', { url, title, parentId, sibling, exactTitle, effects: tabId != null ? [{ kind: 'bind', tabId }] : [] });
   } catch (e) { return offline(toastTab); }
   if (tabId != null) {
     if (r.parent) S.prefer[r.card.id] = r.parent.id;
@@ -250,7 +255,7 @@ async function onHistory({ kind, entry }) {
       if (fx.cardId) bind(tab.id, fx.cardId, fx.url);
     } else if (fx.kind === 'activated') {
       const t = tabNow(undo ? fx.fromTabId : fx.toTabId);
-      if (await tabExists(t)) browser.tabs.update(t, { active: true }).catch(() => {});
+      if (await tabExists(t)) activate(t).catch(() => {});
     }
   }
 }
@@ -259,7 +264,7 @@ async function onHistory({ kind, entry }) {
 const ports = new Map(); // tabId -> port to content.js
 let lastCrumbs = { trails: {}, focus: [], board: null, accent: null };
 let keymap = [];
-browser.commands.getAll().then((cs) => { keymap = cs.filter((c) => c.shortcut).map((c) => ({ name: c.name, shortcut: c.shortcut })); });
+browser.commands.getAll().then((cs) => { keymap = cs.filter((c) => c.shortcut && !c.name.startsWith('_execute_')).map((c) => ({ name: c.name, shortcut: c.shortcut })); });
 const shortcutOf = (name) => (keymap.find((k) => k.name === name) || {}).shortcut || '';
 
 let refreshT = null;
@@ -272,6 +277,7 @@ function refresh() {
     for (const [t, b] of Object.entries(S.bindings)) if (!lastCrumbs.trails[b.cardId]) unbind(+t);
     for (const [tabId, port] of ports) port.postMessage({ t: 'view', ...viewFor(tabId) });
     for (const t of Object.keys(S.bindings)) badge(+t);
+    pushOutline();
   }, 120);
 }
 
@@ -296,6 +302,7 @@ function badge(tabId) {
 
 // ---------- talking to pages ----------
 browser.runtime.onConnect.addListener((port) => {
+  if (port.name === 'sidebar') return connectSidebar(port);
   const tabId = port.sender && port.sender.tab && port.sender.tab.id;
   if (tabId == null) return;
   ready.then(() => {
@@ -345,15 +352,16 @@ function offline(tabId) {
 }
 
 // Breadcrumb click: switch to the card's tab, or open its page in a new tab bound to it.
-async function goTo(cardId, fromTabId) {
+// info: the card's {title, url, anchor} when it isn't on a trail Burrow already knows (palette, sidebar, omnibox).
+async function goTo(cardId, fromTabId, info) {
   const t = tabOfCard(cardId);
   if (t != null) {
-    const tab = await browser.tabs.update(t, { active: true });
+    const tab = await activate(t);
     browser.windows.update(tab.windowId, { focused: true }).catch(() => {});
     return;
   }
   const all = Object.values(lastCrumbs.trails).flat().concat(lastCrumbs.focus);
-  const c = all.find((x) => x.id === cardId);
+  const c = all.find((x) => x.id === cardId) || info;
   if (!c) return;
   // No page yet (a dive you haven't read for): search for it again.
   const url = c.url || searchUrl(c.title);
@@ -381,7 +389,7 @@ async function backToSource(cardId, fromTabId) {
   const anchor = { fragment: ctx.quote || ctx.text, center: true };
   const open = ctx.fromCardId != null ? tabOfCard(ctx.fromCardId) : null;
   if (open != null) {
-    await browser.tabs.update(open, { active: true });
+    await activate(open);
     return restoreWhenLoaded(open, anchor);
   }
   if (!ctx.fromUrl) return toast(fromTabId, 'The page it came from isn’t known');
@@ -445,7 +453,7 @@ async function openFromApp({ url, cardId, anchor }) {
   const same = tabs.filter((t) => sameUrl(t.url, url));
   const hit = same.find((t) => S.bindings[t.id] && S.bindings[t.id].cardId === cardId) || same[0];
   if (hit) {
-    await browser.tabs.update(hit.id, { active: true });
+    await activate(hit.id);
     await browser.windows.update(hit.windowId, { focused: true }).catch(() => {});
     return;
   }
@@ -488,7 +496,7 @@ async function resolveTab(tab, action) {
     const open = tabOfCard(r.next.id);
     if (open != null && open !== tab.id) {
       target = open;
-      await browser.tabs.update(open, { active: true });
+      await activate(open);
     } else {
       // The next card has no tab: reopen its page where you left off, or its search.
       const url = r.next.url || searchUrl(r.next.title);
@@ -527,6 +535,149 @@ async function upToParent(tab) {
   return goTo(parent.id, tab.id);
 }
 
+// ---------- palette (Alt+Shift+K) ----------
+const COMMANDS = [
+  ['done', 'Understood, go to the next one', (b) => b], ['up', 'Up to the card that needs this', (b, p) => b || p],
+  ['park', 'Park it for later', (b) => b], ['unrelated', 'Not related: remove this page’s card', (b) => b],
+  ['capture-page', 'Add this page', (b) => !b], ['undo', 'Undo'], ['redo', 'Redo'],
+  ['toggle-breadcrumb', 'Show or hide the breadcrumb'], ['focus', 'Focus mode on or off'], ['open-app', 'Open Burrow'],
+];
+
+async function openPalette(tab) {
+  if (!tab) return;
+  if (ports.has(tab.id)) return ports.get(tab.id).postMessage({ t: 'palette' });
+  // No content script here: the same palette in a small window.
+  await browser.windows.create({ type: 'popup', url: browser.runtime.getURL('palette.html?tab=' + tab.id), width: 640, height: 420 });
+}
+
+async function paletteItems(q, tabId) {
+  q = String(q || '').trim();
+  const items = [];
+  try {
+    const { cards } = await api('/api/search', { q, limit: 8 });
+    for (const c of cards) items.push({ kind: 'card', group: 'Cards', id: c.id, label: c.title, status: c.status, open: c.open, sub: c.board, url: c.url });
+  } catch (e) { items.push({ kind: 'cmd', group: 'Burrow', name: 'open-app', label: 'Burrow isn’t running', sub: 'systemctl --user start burrow' }); return items; }
+  const tab = tabId != null ? await browser.tabs.get(tabId).catch(() => null) : null;
+  const parentId = tab ? parentFor(tab) : undefined;
+  if (q) {
+    const p = parentId && Object.values(lastCrumbs.trails).flat().find((c) => c.id === parentId);
+    const target = p ? p.title : (lastCrumbs.focus.slice(-1)[0] || {}).title;
+    items.push({ kind: 'create', group: 'Make a card', title: q, label: `“${q}”`, sub: target ? `under “${target}”` : '' });
+  }
+  const b = tab && S.bindings[tab.id], pend = tab && S.pending[tab.id];
+  const ql = q.toLowerCase();
+  for (const [name, label, when] of COMMANDS) {
+    if (when && !when(b, pend)) continue;
+    if (ql && !label.toLowerCase().includes(ql)) continue;
+    items.push({ kind: 'cmd', group: 'Commands', name, label, keys: shortcutOf(name) });
+  }
+  return items;
+}
+
+async function paletteRun(item, tabId) {
+  const tab = tabId != null ? await browser.tabs.get(tabId).catch(() => null) : null;
+  if (item.kind === 'card') return goTo(item.id, tabId, { id: item.id, title: item.label, url: item.url });
+  if (item.kind === 'create') return addPage(null, { title: item.title, parentId: tab ? parentFor(tab) : undefined, exactTitle: true }, tabId);
+  if (item.kind === 'cmd') { lastCmd = { name: '', at: 0 }; return runCommand(item.name, tab); }
+}
+
+// ---------- outline in the sidebar ----------
+const sidebars = new Set();
+let lastOutline = null;
+function connectSidebar(port) {
+  sidebars.add(port);
+  port.onDisconnect.addListener(() => sidebars.delete(port));
+  port.onMessage.addListener(async (m) => {
+    if (m.t !== 'go') return;
+    const [tab] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
+    const n = lastOutline && findNode(lastOutline.roots, m.cardId);
+    goTo(m.cardId, tab && tab.id, n ? { id: n.id, title: n.title, url: n.url } : null);
+  });
+  pushOutline();
+}
+const findNode = (nodes, id) => { for (const n of nodes) { if (n.id === id) return n; const k = findNode(n.kids, id); if (k) return k; } return null; };
+
+let outlineT = null;
+function pushOutline() {
+  if (!sidebars.size && S.settings.focus === 'off') return;
+  clearTimeout(outlineT);
+  outlineT = setTimeout(async () => {
+    const [tab] = await browser.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+    const b = tab && S.bindings[tab.id];
+    try { lastOutline = await api('/api/outline', { cardId: b ? b.cardId : undefined }); } catch (e) { lastOutline = null; }
+    const msg = { t: 'outline', ...(lastOutline || {}), activeCardId: b ? b.cardId : null, accent: lastCrumbs.accent, open: Object.values(S.bindings).map((x) => x.cardId) };
+    for (const p of sidebars) p.postMessage(msg);
+    applyFocus();
+  }, 80);
+}
+
+// ---------- focus mode ----------
+// Optional: bound tabs that aren't on the current trail, beside the current card or under it get hidden
+// (tabs.hide) or unloaded (tabs.discard). Only tabs Burrow knows; turning it off shows them all again.
+async function setFocus(mode, tab) {
+  S.settings.focus = mode; save();
+  browser.storage.local.set({ burrowSettings: S.settings });
+  await applyFocus();
+  toast(tab && tab.id, mode === 'off' ? 'Focus mode off: all tabs are back' : 'Focus mode on: tabs off this trail are hidden');
+}
+
+let focusBusy = false;
+async function applyFocus() {
+  if (focusBusy) return; focusBusy = true;
+  try {
+    const mode = S.settings.focus;
+    const tabs = await browser.tabs.query({});
+    if (mode === 'off') {
+      const back = tabs.filter((t) => S.hidden[t.id]).map((t) => t.id);
+      if (back.length) await browser.tabs.show(back).catch(() => {});
+      S.hidden = {}; save();
+      return;
+    }
+    const act = tabs.find((t) => t.active && t.windowId === (tabs.find((x) => x.active) || {}).windowId);
+    const b = act && S.bindings[act.id];
+    if (!b || !lastOutline) return; // only focus around a card
+    const trail = lastCrumbs.trails[b.cardId] || [];
+    const keep = new Set(trail.map((c) => c.id));
+    const parent = trail[trail.length - 2];
+    const pn = parent && findNode(lastOutline.roots, parent.id);
+    for (const k of (pn ? pn.kids : [])) keep.add(k.id);
+    const me = findNode(lastOutline.roots, b.cardId);
+    for (const k of (me ? me.kids : [])) keep.add(k.id);
+    const hide = [], show = [];
+    for (const t of tabs) {
+      const tb = S.bindings[t.id];
+      const out = tb && !keep.has(tb.cardId) && !t.active && !t.pinned;
+      if (mode === 'hide') {
+        if (out && !t.hidden) hide.push(t.id);
+        else if (!out && S.hidden[t.id]) show.push(t.id);
+      } else if (mode === 'discard' && out && !t.discarded) browser.tabs.discard(t.id).catch(() => {});
+    }
+    if (show.length) { await browser.tabs.show(show).catch(() => {}); for (const id of show) delete S.hidden[id]; }
+    if (hide.length) { const done = await browser.tabs.hide(hide).catch(() => []); for (const id of done || []) S.hidden[id] = true; }
+    save();
+  } finally { focusBusy = false; }
+}
+
+// ---------- omnibox: "bw queue" ----------
+browser.omnibox.setDefaultSuggestion({ description: 'Burrow: jump to a card, or add one' });
+let omniCards = [];
+browser.omnibox.onInputChanged.addListener(async (text, suggest) => {
+  try { omniCards = (await api('/api/search', { q: text, limit: 6 })).cards; } catch (e) { omniCards = []; }
+  const out = omniCards.map((c) => ({ content: 'card:' + c.id, description: `${c.title} · ${c.board}${c.open ? ' · open' : ''}` }));
+  if (text.trim()) out.push({ content: 'new:' + text.trim(), description: `Add “${text.trim()}” to Burrow` });
+  suggest(out);
+});
+browser.omnibox.onInputEntered.addListener(async (text) => {
+  await ready;
+  const [tab] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
+  if (text.startsWith('new:')) return addPage(null, { title: text.slice(4), parentId: tab ? parentFor(tab) : undefined, exactTitle: true }, tab && tab.id);
+  let id = text.startsWith('card:') ? text.slice(5) : null;
+  if (!id) { try { id = ((await api('/api/search', { q: text, limit: 1 })).cards[0] || {}).id; } catch (e) { /* offline */ } }
+  if (!id) return toast(tab && tab.id, `No card matches “${text}”`);
+  const c = omniCards.find((x) => x.id === id);
+  goTo(id, tab && tab.id, c ? { id, title: c.title, url: c.url } : null);
+});
+
 // ---------- commands ----------
 let lastCmd = { name: '', at: 0 };
 async function runCommand(name, tab) {
@@ -541,6 +692,9 @@ async function runCommand(name, tab) {
   if (name === 'park') return resolveTab(tab, 'park');
   if (name === 'unrelated') return resolveTab(tab, 'unrelated');
   if (name === 'up') return upToParent(tab);
+  if (name === 'palette') return openPalette(tab);
+  if (name === 'focus') return setFocus(S.settings.focus === 'off' ? 'hide' : 'off', tab);
+  if (name === 'open-app') return browser.tabs.create({ url: API + '/' });
   if (name === 'undo') return historyStep('undo', tabId);
   if (name === 'redo') return historyStep('redo', tabId);
   if (name === 'toggle-breadcrumb') {
@@ -553,9 +707,11 @@ browser.commands.onCommand.addListener((name) => ready.then(() => runCommand(nam
 browser.browserAction.onClicked.addListener((tab) => ready.then(() => runCommand('capture-page', tab)));
 
 // ---------- popup prompt (pages without a content script) ----------
-browser.runtime.onMessage.addListener((m) => ready.then(() => {
+browser.runtime.onMessage.addListener((m, sender) => ready.then(() => {
   if (m.t === 'promptData') { const info = prompts.get(m.tabId); return info ? promptView(info) : null; }
   if (m.t === 'promptAnswer') return answerPrompt(m.tabId, m.choice);
+  if (m.t === 'paletteQuery') return paletteItems(m.q, m.tabId != null ? m.tabId : sender.tab && sender.tab.id);
+  if (m.t === 'paletteRun') return paletteRun(m.item, m.tabId != null ? m.tabId : sender.tab && sender.tab.id);
   return null;
 }));
 browser.windows.onRemoved.addListener((wid) => {
@@ -564,7 +720,7 @@ browser.windows.onRemoved.addListener((wid) => {
 
 // ---------- settings ----------
 browser.storage.onChanged.addListener((ch) => {
-  if (ch.burrowSettings) { S.settings = { ...DEFAULT_SETTINGS, ...ch.burrowSettings.newValue }; save(); refresh(); }
+  if (ch.burrowSettings) { S.settings = { ...DEFAULT_SETTINGS, ...ch.burrowSettings.newValue }; save(); refresh(); applyFocus(); }
 });
 
 // ---------- context menus ----------

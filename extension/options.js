@@ -1,4 +1,4 @@
-const DEFAULTS = { prompt: true, crumb: true, engine: 'google' };
+const DEFAULTS = { prompt: true, crumb: true, engine: 'google', focus: 'off' };
 const ids = Object.keys(DEFAULTS);
 const read = (id) => { const el = document.getElementById(id); return el.type === 'checkbox' ? el.checked : el.value; };
 const write = (id, v) => { const el = document.getElementById(id); if (el.type === 'checkbox') el.checked = !!v; else el.value = v; };

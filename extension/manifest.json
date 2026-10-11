@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Burrow",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Remembers the path out of a rabbit hole: tabs you open from a page become prerequisites of it in Burrow, with a breadcrumb on every page.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -15,6 +15,7 @@
     "webNavigation",
     "sessions",
     "storage",
+    "tabHide",
     "contextMenus",
     "notifications",
     "<all_urls>",
@@ -26,7 +27,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["palette-ui.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
@@ -37,6 +38,13 @@
       "32": "icons/icon-32.png"
     }
   },
+  "sidebar_action": {
+    "default_title": "Burrow",
+    "default_panel": "sidebar.html",
+    "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png" },
+    "open_at_install": false
+  },
+  "omnibox": { "keyword": "bw" },
   "options_ui": {
     "page": "options.html",
     "browser_style": false
@@ -65,6 +73,14 @@
     "unrelated": {
       "suggested_key": { "default": "Alt+Shift+X" },
       "description": "Not related: remove this page's card from the map"
+    },
+    "palette": {
+      "suggested_key": { "default": "Alt+Shift+K" },
+      "description": "Burrow palette: jump to a card, make one, run a command"
+    },
+    "_execute_sidebar_action": {
+      "suggested_key": { "default": "Alt+Shift+O" },
+      "description": "Show or hide the Burrow outline"
     },
     "undo": {
       "suggested_key": { "default": "Alt+Shift+Z" },

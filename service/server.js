@@ -396,6 +396,53 @@ function addEffects(entryId, effects) {
   return true;
 }
 
+// ---------- outline and search (sidebar, palette, omnibox) ----------
+// A board as a tree: top-level cards, each with what it needs underneath. A card needed by several
+// cards appears once in full; later appearances are marked `repeat`.
+function outline({ cardId, boardId }) {
+  const c = state.cards[cardId];
+  const bId = c ? c.boardId : state.boards[boardId] ? boardId : state.settings.activeBoardId;
+  const b = state.boards[bId];
+  if (!b) return { board: null, roots: [] };
+  const cards = boardCards(bId);
+  const seen = new Set();
+  const node = (k) => {
+    const n = { id: k.id, title: k.title, status: k.status, url: shared.primaryUrl(k) };
+    if (seen.has(k.id)) return { ...n, repeat: true, kids: [] };
+    seen.add(k.id);
+    n.kids = shared.kidsOf(state, k.id).sort((a, z) => a.x - z.x || a.y - z.y).map(node);
+    return n;
+  };
+  const roots = cards.filter(k => !shared.parentsOf(state, k.id).length).sort((a, z) => a.y - z.y || a.x - z.x).map(node);
+  for (const k of cards) if (!seen.has(k.id)) roots.push(node(k)); // only reachable through a loop
+  return { board: { id: b.id, name: b.name }, roots };
+}
+
+function score(text, q) {
+  text = String(text || '').toLowerCase();
+  const i = text.indexOf(q);
+  if (i === 0) return 100 - text.length * 0.01;
+  if (i > 0) return (/\W/.test(text[i - 1]) ? 80 : 60) - text.length * 0.01;
+  let j = 0;
+  for (const ch of text) if (ch === q[j]) j++;
+  return j === q.length ? 20 - text.length * 0.01 : 0;
+}
+
+// Cards matching `q` on every board, cards on the active board first when tied.
+function search({ q, limit }) {
+  q = String(q || '').trim().toLowerCase();
+  const here = state.settings.activeBoardId;
+  const open = new Set(openTabs.map(t => t.cardId));
+  // Board and open-tab bonuses only reorder real matches.
+  const list = Object.values(state.cards)
+    .map(c => ({ c, m: q ? score(c.title, q) : 1 }))
+    .filter(x => x.m > 0)
+    .map(x => ({ c: x.c, s: x.m + (x.c.boardId === here ? 5 : 0) + (open.has(x.c.id) ? 3 : 0) }))
+    .sort((a, z) => z.s - a.s || z.c.createdAt - a.c.createdAt)
+    .slice(0, Math.min(Number(limit) || 12, 50));
+  return list.map(({ c }) => ({ id: c.id, title: c.title, status: c.status, url: shared.primaryUrl(c), board: state.boards[c.boardId].name, open: open.has(c.id) }));
+}
+
 // After a browser restart: which card does each open URL belong to?
 function match(urls) {
   const out = {};
@@ -541,6 +588,16 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/preview' && req.method === 'POST') {
       const body = await readBody(req);
       return send(res, 200, { ok: true, ...preview(body) }, cors);
+    }
+
+    if (p === '/api/outline' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, ...outline(body) }, cors);
+    }
+
+    if (p === '/api/search' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, cards: search(body) }, cors);
     }
 
     if (p === '/api/resolve' && req.method === 'POST') {
