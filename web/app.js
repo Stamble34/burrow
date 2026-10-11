@@ -47,6 +47,14 @@
   const kidsOf = (id) => (graph.kids.get(id) || []).map((cid) => state.cards[cid]).filter(Boolean).sort((a, b) => a.x - b.x);
   const parsOf = (id) => (graph.pars.get(id) || []).map((cid) => state.cards[cid]).filter(Boolean).sort((a, b) => a.x - b.x);
   const primary = () => (selected.size ? [...selected][selected.size - 1] : null);
+  // Shortcuts follow the physical key when the layout isn't Latin (with Russian active, the D key types "в").
+  // Typed text is untouched; this only decides which shortcut a key means.
+  function keyOf(e) {
+    const k = e.key;
+    if (k.length === 1 && /^Key[A-Z]$/.test(e.code) && !/^[a-z]$/i.test(k)) { const l = e.code.slice(3); return e.shiftKey ? l : l.toLowerCase(); }
+    if (e.code === 'Slash' && (k === '.' || k === ',')) return e.shiftKey ? '?' : '/'; // Russian: "/" is "." and "?" is ","
+    return k;
+  }
   const isTyping = (t) => t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
   const urlOf = (c) => S.primaryUrl(c);
   const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return u; } };
@@ -1148,7 +1156,7 @@
 
   window.addEventListener('keydown', (e) => {
     if (e.defaultPrevented) return;
-    const k = e.key; const mod = e.ctrlKey || e.metaKey;
+    const k = keyOf(e); const mod = e.ctrlKey || e.metaKey;
     if (!$('#paletteOverlay').hidden || !$('#helpOverlay').hidden) return;
     if (mod && (k === 'k' || k === 'K' || k === 'p')) { e.preventDefault(); return openPalette(); }
     if (mod && (k === 'b' || k === 'B')) { e.preventDefault(); return openPalette('boards'); }
@@ -1419,8 +1427,8 @@
 
   pal.input.addEventListener('input', buildPalette);
   pal.input.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown' || (e.key === 'n' && e.ctrlKey)) { e.preventDefault(); pal.active = Math.min(pal.items.length - 1, pal.active + 1); paintActive(); }
-    else if (e.key === 'ArrowUp' || (e.key === 'p' && e.ctrlKey)) { e.preventDefault(); pal.active = Math.max(0, pal.active - 1); paintActive(); }
+    if (e.key === 'ArrowDown' || (keyOf(e) === 'n' && e.ctrlKey)) { e.preventDefault(); pal.active = Math.min(pal.items.length - 1, pal.active + 1); paintActive(); }
+    else if (e.key === 'ArrowUp' || (keyOf(e) === 'p' && e.ctrlKey)) { e.preventDefault(); pal.active = Math.max(0, pal.active - 1); paintActive(); }
     else if (e.key === 'Enter') { e.preventDefault(); const it = pal.items[pal.active]; closePalette(); if (it) it.run(); }
     else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
     else if (e.key === 'F2' && pal.mode !== 'renameboard') { e.preventDefault(); const it = pal.items[pal.active]; openPalette('renameboard', it && it.kind === 'board' ? it.boardId : boardId()); }
@@ -1558,7 +1566,7 @@
   $('#helpBtn').addEventListener('click', openHelp);
   $('#helpClose').addEventListener('click', closeHelp);
   $('#helpOverlay').addEventListener('pointerdown', (e) => { if (e.target.id === 'helpOverlay') closeHelp(); });
-  window.addEventListener('keydown', (e) => { if (!$('#helpOverlay').hidden && (e.key === 'Escape' || e.key === '?')) { e.preventDefault(); closeHelp(); } });
+  window.addEventListener('keydown', (e) => { if (!$('#helpOverlay').hidden && (e.key === 'Escape' || keyOf(e) === '?')) { e.preventDefault(); closeHelp(); } });
 
   // ---------- toasts ----------
   function toast(msg, opts = {}) {

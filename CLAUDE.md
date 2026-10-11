@@ -67,4 +67,5 @@ The browser extension is the main interface: the user lives in Zen, and the app/
   - Text fragments (`#:~:text=`) scroll only for user navigations, not for tabs the extension opens; scroll to anchors ourselves.
   - `Alt`+click (Zen Glance) is taken by Cinnamon's window-drag modifier, so Glance isn't reachable that way here.
   - The popup-window prompt gets focus under Cinnamon. `sessions.restore` keeps index, URL and tab values. `tabs.hide`, `sidebar_action` and `omnibox` all work.
+- Shortcuts must work with the Russian layout active (the user switches with Super+Space; layouts us,ru,us). The app maps letters through `keyOf(e)` (physical key when the typed character isn't Latin); content.js matches by `e.code`. Zen's own `commands` handling already copes (tested on a PDF tab with Russian active).
 - Decisions for later phases: Done closes the tab (undo reopens it), then goes to the next unfinished sibling before the parent. Dive from selection opens a Google search.

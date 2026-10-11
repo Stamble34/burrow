@@ -164,7 +164,7 @@
   });
   // With the toast focused (click it), Z undoes.
   $('#toast').addEventListener('keydown', (e) => {
-    if (e.key.toLowerCase() === 'z' && !e.altKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); port.postMessage({ t: 'undo' }); $('#toast').hidden = true; }
+    if (e.code === 'KeyZ' && !e.altKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); port.postMessage({ t: 'undo' }); $('#toast').hidden = true; }
   });
 
   // ---------- shortcuts ----------
