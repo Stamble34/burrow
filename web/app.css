@@ -164,6 +164,11 @@ kbd {
 .card.s-parked .card-title { color: var(--text-2); }
 .tab-dot { position: absolute; top: 9px; right: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 20%, transparent); }
 .meta-more { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.d-context { display: block; margin: -4px 0 14px; font-size: 12.5px; line-height: 1.45; color: var(--text-2); text-decoration: none; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); }
+.d-context[hidden] { display: none; }
+.d-context b { color: var(--text); font-weight: 600; }
+.d-context q { color: var(--text); }
+.d-context[href]:hover { border-color: color-mix(in oklab, var(--accent) 45%, transparent); }
 .d-sources { list-style: none; margin: -4px 0 14px; padding: 0; display: grid; gap: 2px; }
 .d-sources li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; }
 .d-sources a { color: var(--text-2); text-decoration: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }

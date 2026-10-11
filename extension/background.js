@@ -6,11 +6,19 @@
 // The service (service/server.js) does the map logic; this file is browser glue.
 const API = 'http://127.0.0.1:7417';
 const CLIENT = 'ext-' + Math.random().toString(36).slice(2, 10);
-const DEFAULT_SETTINGS = { prompt: true, crumb: true };
+const DEFAULT_SETTINGS = { prompt: true, crumb: true, engine: 'google' };
+const ENGINES = {
+  google: 'https://www.google.com/search?q=',
+  duckduckgo: 'https://duckduckgo.com/?q=',
+  bing: 'https://www.bing.com/search?q=',
+  wikipedia: 'https://en.wikipedia.org/w/index.php?search=',
+};
+const searchUrl = (q) => (ENGINES[S.settings.engine] || ENGINES.google) + encodeURIComponent(q);
 
 // ---------- persisted state ----------
 // Tab ids are only valid until the browser restarts, so this is rebuilt on startup (see rebind()).
-let S = { bindings: {}, pending: {}, asked: {}, prefer: {}, settings: { ...DEFAULT_SETTINGS } };
+// alias: a tab closed by undo and reopened by redo gets a new id; effects keep the old one.
+let S = { bindings: {}, pending: {}, asked: {}, prefer: {}, alias: {}, settings: { ...DEFAULT_SETTINGS } };
 const ready = browser.storage.local.get('burrow').then((r) => {
   if (r.burrow) S = { ...S, ...r.burrow, settings: { ...DEFAULT_SETTINGS, ...(r.burrow.settings || {}) } };
 });
@@ -129,7 +137,7 @@ const prompts = new Map(); // tabId -> { parentId, url, title, preview, popupWin
 
 async function maybePrompt(tabId) {
   const p = S.pending[tabId];
-  if (!p || S.asked[tabId] || !S.settings.prompt || prompts.has(tabId)) return;
+  if (!p || S.asked[tabId] || !S.settings.prompt || prompts.has(tabId) || diving.has(tabId) || S.bindings[tabId]) return;
   const tab = await browser.tabs.get(tabId).catch(() => null);
   if (!tab || !tab.active || tab.status !== 'complete' || !isPage(tab.url)) return;
   S.asked[tabId] = true; save();
@@ -202,13 +210,29 @@ async function historyStep(kind, tabId) {
 }
 
 // Reverse (undo) or replay (redo) what the browser did alongside a change. Runs for undo from the app too.
+// Effects: bind {tabId, cardId} · opened {tabId, url, cardId}: a tab Burrow opened (undo closes it, redo
+// reopens it) · activated {fromTabId, toTabId}: Burrow switched tabs (undo goes back).
+const tabNow = (id) => { let t = id; for (let i = 0; i < 20 && S.alias[t] != null; i++) t = S.alias[t]; return t; };
+const tabExists = (id) => browser.tabs.get(id).then(() => true, () => false);
+
 async function onHistory({ kind, entry }) {
-  for (const fx of (entry.effects || []).slice()[kind === 'undo' ? 'reverse' : 'slice']()) {
+  const undo = kind === 'undo';
+  for (const fx of (entry.effects || []).slice()[undo ? 'reverse' : 'slice']()) {
     if (fx.kind === 'bind') {
-      const exists = await browser.tabs.get(fx.tabId).then(() => true, () => false);
-      if (!exists) continue;
-      if (kind === 'undo') { unbind(fx.tabId); S.asked[fx.tabId] = true; save(); }
-      else if (fx.cardId) bind(fx.tabId, fx.cardId);
+      const t = tabNow(fx.tabId);
+      if (!(await tabExists(t))) continue;
+      if (undo) { unbind(t); S.asked[t] = true; save(); }
+      else if (fx.cardId) bind(t, fx.cardId);
+    } else if (fx.kind === 'opened') {
+      const t = tabNow(fx.tabId);
+      if (undo) { if (await tabExists(t)) await browser.tabs.remove(t); }
+      else if (!(await tabExists(t))) {
+        const tab = await browser.tabs.create({ url: fx.url, active: false });
+        S.alias[t] = tab.id; save();
+      }
+    } else if (fx.kind === 'activated') {
+      const t = tabNow(undo ? fx.fromTabId : fx.toTabId);
+      if (await tabExists(t)) browser.tabs.update(t, { active: true }).catch(() => {});
     }
   }
 }
@@ -259,6 +283,10 @@ browser.runtime.onConnect.addListener((port) => {
   ready.then(() => {
     ports.set(tabId, port);
     badge(tabId);
+    if (restores.has(tabId)) { port.postMessage({ t: 'restore', anchor: restores.get(tabId) }); restores.delete(tabId); }
+    const later = laterToasts.get(tabId);
+    if (later && Date.now() - later.at < 8000) port.postMessage(later.msg);
+    else laterToasts.delete(tabId);
     port.postMessage({ t: 'view', ...viewFor(tabId) });
     if (prompts.has(tabId) && prompts.get(tabId).popupWindowId == null) port.postMessage({ t: 'prompt', ...promptView(prompts.get(tabId)) });
   });
@@ -272,11 +300,16 @@ async function onPageMessage(tabId, m) {
   if (m.t === 'undo') return historyStep('undo', tabId);
   if (m.t === 'redo') return historyStep('redo', tabId);
   if (m.t === 'go') return goTo(m.cardId, tabId);
+  if (m.t === 'from') return backToSource(m.cardId, tabId);
+  if (m.t === 'anchor') {
+    const b = S.bindings[tabId];
+    if (b && sameUrl(m.url, b.url)) api('/api/anchor', { cardId: b.cardId, url: m.url, scroll: m.scroll, fragment: m.fragment }).catch(() => {});
+  }
 }
 
 // Wait briefly for a page's content script to connect (it loads at document_idle).
-async function sendWhenReady(tabId, msg) {
-  for (let i = 0; i < 8 && !ports.has(tabId); i++) await new Promise((r) => setTimeout(r, 100));
+async function sendWhenReady(tabId, msg, waitMs = 800) {
+  for (let i = 0; i < waitMs / 100 && !ports.has(tabId); i++) await new Promise((r) => setTimeout(r, 100));
   const port = ports.get(tabId);
   if (!port) return false;
   port.postMessage(msg);
@@ -303,14 +336,93 @@ async function goTo(cardId, fromTabId) {
   }
   const all = Object.values(lastCrumbs.trails).flat().concat(lastCrumbs.focus);
   const c = all.find((x) => x.id === cardId);
-  if (!c || !c.url) return toast(fromTabId, `“${c ? c.title : 'That card'}” has no page yet`);
-  const tab = await browser.tabs.create({ url: c.url, openerTabId: fromTabId });
-  bind(tab.id, cardId, c.url);
+  if (!c) return;
+  // No page yet (a dive you haven't read for): search for it again.
+  const url = c.url || searchUrl(c.title);
+  const tab = await browser.tabs.create({ url, openerTabId: fromTabId });
+  bind(tab.id, cardId, url);
+  if (c.url && c.anchor) restoreWhenLoaded(tab.id, c.anchor);
+}
+
+// ---------- return anchors ----------
+// content.js reports where you were when a bound tab is hidden; a reopened page scrolls back there.
+const restores = new Map(); // tabId -> anchor, sent when the page's content script connects
+const laterToasts = new Map(); // tabId -> toast for a page that is still loading
+function restoreWhenLoaded(tabId, anchor) {
+  if (!anchor) return;
+  const port = ports.get(tabId);
+  if (port) port.postMessage({ t: 'restore', anchor });
+  else restores.set(tabId, anchor);
+}
+
+// "From BFS: …" in the breadcrumb: back to the page this card was dived from, at the sentence.
+async function backToSource(cardId, fromTabId) {
+  const c = Object.values(lastCrumbs.trails).flat().find((x) => x.id === cardId);
+  const ctx = c && c.context;
+  if (!ctx) return;
+  const anchor = { fragment: ctx.quote || ctx.text, center: true };
+  const open = ctx.fromCardId != null ? tabOfCard(ctx.fromCardId) : null;
+  if (open != null) {
+    await browser.tabs.update(open, { active: true });
+    return restoreWhenLoaded(open, anchor);
+  }
+  if (!ctx.fromUrl) return toast(fromTabId, 'The page it came from isn’t known');
+  const tab = await browser.tabs.create({ url: ctx.fromUrl, openerTabId: fromTabId });
+  if (ctx.fromCardId) bind(tab.id, ctx.fromCardId, ctx.fromUrl);
+  restoreWhenLoaded(tab.id, anchor);
+}
+
+// ---------- dive ----------
+// Explicit, so no prompt: a child card of this tab's card, titled from the selection (or the link),
+// opened in a new tab bound to it. Undo closes that tab and returns here.
+const diving = new Set(); // tabs Burrow is opening right now; never prompt for them
+
+function parentFor(tab) {
+  const b = S.bindings[tab.id], p = S.pending[tab.id];
+  return b ? b.cardId : p ? p.parentId : undefined;
+}
+
+async function dive(tab, { title, url, context }) {
+  if (!title && !url) return;
+  const target = url || searchUrl(title);
+  const created = await browser.tabs.create({ url: target, openerTabId: tab.id, active: true });
+  diving.add(created.id);
+  let r;
+  try {
+    r = await api('/api/capture', {
+      title, url: url || '', exactTitle: !url, parentId: parentFor(tab), context,
+      label: `Dove into “${title || url}”`,
+      effects: [{ kind: 'opened', tabId: created.id, url: target }, { kind: 'bind', tabId: created.id }, { kind: 'activated', fromTabId: tab.id, toTabId: created.id }],
+    });
+  } catch (e) { diving.delete(created.id); return offline(tab.id); }
+  if (r.parent) S.prefer[r.card.id] = r.parent.id;
+  bind(created.id, r.card.id, target);
+  diving.delete(created.id);
+  const text = `Dove into “${r.card.title}”${r.parent ? ` under “${r.parent.title}”` : ''}`;
+  const msg = { t: 'toast', text, undo: shortcutOf('undo'), redo: '' };
+  // The new page is usually still loading, and search pages often reload themselves once (Google adds
+  // &sei=), so keep the toast for a few seconds and show it on whichever document connects.
+  laterToasts.set(created.id, { msg, at: Date.now() });
+  if (ports.has(created.id)) ports.get(created.id).postMessage(msg);
+}
+
+async function diveFromSelection(tab) {
+  if (!tab) return;
+  const g = await browser.tabs.sendMessage(tab.id, { t: 'grab', kind: 'selection' }).catch(() => null);
+  if (!g || !g.text) return toast(tab.id, 'Select some words to dive into');
+  return dive(tab, { title: g.text.slice(0, 120), context: { text: g.sentence, quote: g.text, fromUrl: g.fragmentUrl } });
+}
+
+async function diveIntoLink(tab, info) {
+  const g = await browser.tabs.sendMessage(tab.id, { t: 'grab', kind: 'link', url: info.linkUrl }).catch(() => null);
+  const text = ((g && g.text) || info.linkText || '').replace(/\s+/g, ' ').trim();
+  const vague = text.length < 4 || text === info.linkUrl || /^(here|link|this|source|more|read more|\[\d+\])$/i.test(text);
+  return dive(tab, { title: vague ? '' : text, url: info.linkUrl, context: g ? { text: g.sentence, quote: text, fromUrl: g.fragmentUrl } : null });
 }
 
 // A link clicked in the app: switch to a tab already showing that page (the card's own tab first),
 // otherwise open it in a new tab bound to the card.
-async function openFromApp({ url, cardId }) {
+async function openFromApp({ url, cardId, anchor }) {
   const tabs = await browser.tabs.query({});
   const same = tabs.filter((t) => sameUrl(t.url, url));
   const hit = same.find((t) => S.bindings[t.id] && S.bindings[t.id].cardId === cardId) || same[0];
@@ -323,6 +435,7 @@ async function openFromApp({ url, cardId }) {
   const tab = await browser.tabs.create({ url, windowId: win ? win.id : undefined });
   browser.windows.update(tab.windowId, { focused: true }).catch(() => {});
   if (cardId) bind(tab.id, cardId, url);
+  restoreWhenLoaded(tab.id, anchor);
 }
 
 // ---------- commands ----------
@@ -334,6 +447,7 @@ async function runCommand(name, tab) {
   if (!tab) [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   const tabId = tab && tab.id;
   if (name === 'capture-page') return captureTab(tab);
+  if (name === 'dive') return diveFromSelection(tab);
   if (name === 'undo') return historyStep('undo', tabId);
   if (name === 'redo') return historyStep('redo', tabId);
   if (name === 'toggle-breadcrumb') {
@@ -361,6 +475,8 @@ browser.storage.onChanged.addListener((ch) => {
 });
 
 // ---------- context menus ----------
+browser.contextMenus.create({ id: 'burrow-dive-sel', title: 'Dive into “%s”', contexts: ['selection'] });
+browser.contextMenus.create({ id: 'burrow-dive-link', title: 'Dive into this link', contexts: ['link'] });
 browser.contextMenus.create({ id: 'burrow-link', title: 'Add link to Burrow', contexts: ['link'] });
 browser.contextMenus.create({ id: 'burrow-page', title: 'Add page to Burrow', contexts: ['page'] });
 browser.contextMenus.create({ id: 'burrow-open', title: 'Open Burrow', contexts: ['browser_action'] });
@@ -375,6 +491,8 @@ browser.contextMenus.onClicked.addListener((info, tab) => ready.then(() => {
     addPage(null, { url: info.linkUrl, title: vague ? '' : text, parentId: b ? b.cardId : undefined }, tab.id);
   }
   if (info.menuItemId === 'burrow-page') runCommand('capture-page', tab);
+  if (info.menuItemId === 'burrow-dive-sel') diveFromSelection(tab);
+  if (info.menuItemId === 'burrow-dive-link') diveIntoLink(tab, info);
   if (info.menuItemId === 'burrow-open') browser.tabs.create({ url: API + '/' });
 }));
 

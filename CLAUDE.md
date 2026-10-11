@@ -18,6 +18,7 @@ The browser extension is the main interface: the user lives in Zen, and the app/
     - `POST /api/undo`, `POST /api/redo`, `GET /api/history`
     - `POST /api/capture` (add a page: under `parentId`, next to it with `sibling`, or under the capture target; records history with `effects`)
     - `POST /api/open` (the app opens a link through the extension, which reuses an open tab; `routed: false` when the extension isn't connected, and the app opens a tab itself)
+    - `POST /api/anchor` (save a page's return anchor; not undoable)
     - `POST /api/preview` (what the confirm prompt says), `POST /api/source` (add a source to a card), `POST /api/crumbs` (breadcrumb trails), `POST /api/match` (cards for URLs, after a browser restart), `GET|POST /api/tabs`
     - `GET /api/title?url=` (fetches a page title)
     - `GET /capture` (bookmarklet page)
@@ -29,7 +30,7 @@ The browser extension is the main interface: the user lives in Zen, and the app/
   - `settings.put`
   - Concepts: cards that share a `conceptId` are the same concept on different boards. `title`, `url`, `note`, `status` and `doneAt` are kept in sync by `applyOp` (position and links stay per board). A card that joins a concept takes on the siblings' fields. New cards and captures join automatically when another board has the same title or URL (`findConcept`); the palette has "Link repeated concepts across boards" for older data and "Detach from other boards" as the escape hatch for false matches.
   - A link `{from, to}` means `from` needs `to` first; `to` is drawn below.
-  - Data version 2: a card has `urls: [{url, title, visitedAt}]` (primary first; `primaryUrl(card)`) instead of `url`, and status can be `parked`. `migrateCard` converts old cards, and `card.put` still accepts a legacy `url` from an old client.
+  - Data version 2: a card has `urls: [{url, title, visitedAt, scroll, fragment}]` (primary first; `primaryUrl(card)`) instead of `url`, and status can be `parked`. `scroll`/`fragment` are the return anchor (where you'd read to). A dived card has `context: {text, quote, fromCardId, fromUrl}` (the sentence, the selected words, the card and the `#:~:text=` URL it came from); `context` is per board, not a concept field. `migrateCard` converts old cards, and `card.put` still accepts a legacy `url` from an old client.
   - `inverseOf(state, op)` and `trailOf(state, id, prefer)` live here so the service can compute undo and breadcrumbs.
 - `web/app.js`: the whole UI as one vanilla-JS file with no build step. Sections are marked `// ---------- name ----------`.
   - Cards are DOM elements inside `#world`, which is moved and scaled with a CSS transform. Links are drawn in an SVG layer.
@@ -40,7 +41,8 @@ The browser extension is the main interface: the user lives in Zen, and the app/
 - `desktop/`: Electron shell with a frameless window. It loads the service URL and starts the service if it isn't running. The preload exposes `window.burrowDesktop` (window controls, the `Ctrl+Alt+B` quick add, and `raiseBrowser()`, which runs `wmctrl -x -a Navigator.zen` because Cinnamon won't let Zen raise itself while Burrow has focus).
 - `extension/`: Firefox MV2 extension for Zen. It needs Mozilla signing (unlisted) to stay installed; see README. Bump `version` in its manifest whenever it changes.
   - `background.js`: tab→card bindings (`S.bindings`, `S.pending` for tabs opened from a bound tab, `S.asked`), persisted in `storage.local` and on each tab with `sessions.setTabValue`; rebuilt by `rebind()` on browser start (tab value first, then URL match). One SSE connection to the service; breadcrumb views go to pages over ports. Shortcuts arrive both from `commands` and from content.js (which beats site accesskeys); `runCommand` drops the duplicate.
-  - `content.js`: breadcrumb pill, confirm prompt and toasts in one closed Shadow DOM. It never talks to 127.0.0.1 itself.
+  - Dive (`Alt+Shift+S`, context menus): `dive()` opens the search/link tab, then `/api/capture` with `exactTitle`, `context` and effects `opened` (undo closes the tab, redo reopens it; `S.alias` maps the old tab id to the new one), `bind` and `activated` (undo goes back to the origin tab). Search pages are never sources (`isSearchUrl` in the service). Engine is a setting (`ENGINES`), Google by default.
+  - `content.js`: breadcrumb pill (with the "From …" context line on hover), confirm prompt and toasts in one closed Shadow DOM; `grab` (selection or link + its sentence + a text-fragment URL) for dives; reports the return anchor on `visibilitychange` → hidden and restores it (`restore`: find the saved words nearest the saved scroll, else the scroll). It never talks to 127.0.0.1 itself.
   - `prompt.html`: the confirm prompt as a popup window, for pages without content scripts. `options.html`: prompt on/off, breadcrumb on/off.
 - `install.sh`: copies the app to `~/.local/share/burrow/app`, sets up the systemd user unit `burrow.service` and the `.desktop` entry.
 

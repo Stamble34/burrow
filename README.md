@@ -46,7 +46,7 @@ cd desktop && npm install && npx electron .    # optional desktop window
 
 Statuses: **to learn** (blue), **learning** (yellow), **understood** (grey), **parked** (dashed: set aside for now).
 
-A card keeps every page you read for it. The details panel (`E`) shows the main link and the other sources, and a small dot in a card's corner means it's open in a browser tab.
+A card keeps every page you read for it. The details panel (`E`) shows the main link, the other sources and, for a card you dove into, the sentence it came from. A small dot in a card's corner means it's open in a browser tab.
 
 ## Shortcuts
 
@@ -90,8 +90,11 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
   - `Shift+Enter` adds it next to that card instead (under the same parent).
   - `Esc` ignores it, and Burrow won't ask about that tab again. `Alt+Shift+B` still adds it later.
   - Clicking into the page leaves the prompt alone. It fades after about 10 seconds, which counts as ignoring it.
-- **Read around.** Following links inside a bound tab adds those pages as extra sources of the same card. It never makes new cards.
-- **The breadcrumb** at the bottom left of every page shows the trail from the top card down to this tab: *BFS / Queue / Linked lists / Doubly linked list · 4 deep*. Click a step to switch to its tab, or to reopen its page. On a tab that isn't on the map it shows where a capture would go. It hides in fullscreen.
+- **Dive.** Select a few words you don't understand and press `Alt+Shift+S` (or right-click → **Dive into “…”**). Burrow adds them as a card under this tab's card, keeps the sentence they came from, and opens a Google search for them in a new tab tied to the new card. Right-click a link → **Dive into this link** does the same with the link's page. No prompt for these, since you asked; `Alt+Shift+Z` undoes the card and closes the tab.
+- **Read around.** Following links inside a bound tab adds those pages as extra sources of the same card (search result pages don't count). It never makes new cards.
+- **The breadcrumb** at the bottom left of every page shows the trail from the top card down to this tab: *BFS / Queue / Linked lists / Doubly linked list · 4 deep*. Click a step to switch to its tab, or to reopen its page (a card with no page yet reopens its search). On a tab that isn't on the map it shows where a capture would go. It hides in fullscreen.
+  - Hover it on a page you dove into to see where it came from: *From Queues: “A circular buffer is a fixed-size queue that wraps around at the end.”* Click that line to go back to that sentence.
+- **Pick up where you were.** Leaving a bound tab remembers how far down you'd read. When the page is reopened later (from the breadcrumb or the app), it scrolls back there.
   - On pages where extensions can't draw (PDFs, `about:` pages, addons.mozilla.org), the toolbar icon shows the depth instead, and the prompt opens as a small window.
 - **Undo anything.** `Alt+Shift+Z` undoes the last Burrow change, and `Alt+Shift+Y` redoes it. The app and the browser share one history, so `Ctrl+Z` in the app undoes a page added in the browser and vice versa. Undoing an add also unbinds the tab.
 - After a browser restart, tabs find their cards again.
@@ -100,12 +103,13 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
 | Browser shortcut | |
 |---|---|
 | `Alt+Shift+B` | Add this page (under the card it was opened from, or the capture target) |
+| `Alt+Shift+S` | Dive into the selected words |
 | `Alt+Shift+Z` / `Alt+Shift+Y` | Undo / redo |
 | `Alt+Shift+H` | Show or hide the breadcrumb |
 
 Some sites use `Alt+Shift` letters for their own shortcuts (on Wikipedia `Alt+Shift+P` prints). On pages Burrow can draw on, its shortcuts win. Right-click a link and choose **Add link to Burrow** to add it without opening it.
 
-To stop the prompts and only add pages with the shortcut, open the extension's preferences (`about:addons` → Burrow → Preferences).
+To stop the prompts and only add pages with the shortcut, or to search with something other than Google, open the extension's preferences (`about:addons` → Burrow → Preferences).
 
 ## Installing the Zen extension
 

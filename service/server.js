@@ -260,7 +260,9 @@ function preview({ url, title, parentId, sibling }) {
   };
 }
 
-async function capture({ url, title, note, boardId, parentId, sibling, effects, label, clientId }) {
+// context: where a dive came from, { text: the sentence, quote: the selected words, fromCardId, fromUrl (with #:~:text=) }.
+// exactTitle: use `title` as typed (a selection) instead of cleaning it like a page title.
+async function capture({ url, title, note, boardId, parentId, sibling, effects, label, clientId, context, exactTitle }) {
   url = String(url || '').trim();
   let rawTitle = String(title || '').trim();
   if (!rawTitle && url) rawTitle = (await fetchTitle(url)) || '';
@@ -285,10 +287,16 @@ async function capture({ url, title, note, boardId, parentId, sibling, effects, 
   let spot = spotUnder(parent, cards);
   if (sibling && anchor && !parent) spot = { x: anchor.x + CARD_W + 24, y: anchor.y };
   const card = {
-    id: shared.uid('c_'), boardId: bId, title: shared.cleanTitle(rawTitle, url),
+    id: shared.uid('c_'), boardId: bId, title: exactTitle && rawTitle ? rawTitle.replace(/\s+/g, ' ').slice(0, 200) : shared.cleanTitle(rawTitle, url),
     urls: url ? [{ url, title: rawTitle, visitedAt: Date.now() }] : [],
     note: note ? String(note).slice(0, 4000) : '', status: 'todo', x: spot.x, y: spot.y, createdAt: Date.now(), source: 'capture',
   };
+  if (context && typeof context === 'object') {
+    card.context = {
+      text: String(context.text || '').slice(0, 600), quote: String(context.quote || '').slice(0, 300),
+      fromCardId: state.cards[context.fromCardId] ? context.fromCardId : (parent ? parent.id : null), fromUrl: String(context.fromUrl || '').slice(0, 2000),
+    };
+  }
   ops.push({ t: 'card.put', card });
   effects = withCard(card.id);
   // The same concept on another board: share it, so what is understood there is understood here.
@@ -302,9 +310,18 @@ async function capture({ url, title, note, boardId, parentId, sibling, effects, 
 }
 
 // Same-tab navigation: the page becomes another source of the card. Not an undo step.
+// Search result pages are how you find sources, not sources themselves.
+function isSearchUrl(url) {
+  try {
+    const u = new URL(url); const h = u.hostname.replace(/^www\./, '');
+    return (/^google\.[a-z.]+$/.test(h) && u.pathname === '/search') || (h === 'duckduckgo.com' && u.searchParams.has('q')) ||
+      (h === 'bing.com' && u.pathname === '/search') || (/wikipedia\.org$/.test(h) && /Special:Search/.test(u.pathname + u.search));
+  } catch (e) { return false; }
+}
+
 function addSource({ cardId, url, title }) {
   const c = state.cards[cardId];
-  if (!c || !/^https?:/i.test(url || '')) return false;
+  if (!c || !/^https?:/i.test(url || '') || isSearchUrl(url)) return false;
   const k = shared.urlKey(url);
   if ((c.urls || []).some(u => shared.urlKey(u.url) === k)) return false;
   const urls = [...(c.urls || []), { url, title: String(title || '').slice(0, 300), visitedAt: Date.now() }].slice(-30);
@@ -312,7 +329,30 @@ function addSource({ cardId, url, title }) {
   return true;
 }
 
-const crumbOf = (c) => ({ id: c.id, title: c.title, status: c.status, url: shared.primaryUrl(c) });
+// Where you were on a page when you left it, so coming back (or reopening it) lands there again. Not an undo step.
+function setAnchor({ cardId, url, scroll, fragment }) {
+  const c = state.cards[cardId];
+  if (!c) return false;
+  const k = shared.urlKey(url);
+  const i = (c.urls || []).findIndex(u => shared.urlKey(u.url) === k);
+  if (i < 0) return false;
+  const prev = c.urls[i];
+  const next = { ...prev, scroll: Math.max(0, Math.round(Number(scroll) || 0)), fragment: fragment ? String(fragment).slice(0, 300) : null, visitedAt: Date.now() };
+  if (prev.scroll === next.scroll && prev.fragment === next.fragment) return false;
+  const urls = c.urls.slice(); urls[i] = next;
+  applyOps([{ t: 'card.put', card: { id: c.id, boardId: c.boardId, urls } }], 'browser');
+  return true;
+}
+
+const crumbOf = (c) => {
+  const u = (c.urls || [])[0];
+  const from = c.context && c.context.fromCardId && state.cards[c.context.fromCardId];
+  return {
+    id: c.id, title: c.title, status: c.status, url: u ? u.url : '',
+    anchor: u && (u.scroll || u.fragment) ? { scroll: u.scroll || 0, fragment: u.fragment || null } : null,
+    context: c.context && c.context.text ? { text: c.context.text, quote: c.context.quote, fromUrl: c.context.fromUrl, fromCardId: from ? from.id : null, fromTitle: from ? from.title : null } : null,
+  };
+};
 
 // Trails for the breadcrumb strip: one per bound card, plus the capture target for unbound tabs.
 function crumbs(cardIds, prefer) {
@@ -443,7 +483,10 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/open' && req.method === 'POST') {
       const body = await readBody(req);
       const ok = !!tabsOwner && /^(https?|file):/i.test(body.url || '');
-      if (ok) broadcast({ open: { url: body.url, cardId: body.cardId || null } });
+      const c = state.cards[body.cardId];
+      const u = c && (c.urls || []).find(x => shared.urlKey(x.url) === shared.urlKey(body.url));
+      const anchor = u && (u.scroll || u.fragment) ? { scroll: u.scroll || 0, fragment: u.fragment || null } : null;
+      if (ok) broadcast({ open: { url: body.url, cardId: body.cardId || null, anchor } });
       return send(res, 200, { ok: true, routed: ok }, cors);
     }
 
@@ -465,6 +508,11 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/preview' && req.method === 'POST') {
       const body = await readBody(req);
       return send(res, 200, { ok: true, ...preview(body) }, cors);
+    }
+
+    if (p === '/api/anchor' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, saved: setAnchor(body) }, cors);
     }
 
     if (p === '/api/source' && req.method === 'POST') {

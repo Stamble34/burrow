@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Burrow",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Remembers the path out of a rabbit hole: tabs you open from a page become prerequisites of it in Burrow, with a breadcrumb on every page.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -45,6 +45,10 @@
     "capture-page": {
       "suggested_key": { "default": "Alt+Shift+B" },
       "description": "Add this page to Burrow"
+    },
+    "dive": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "Dive into the selected words (new card + search)"
     },
     "undo": {
       "suggested_key": { "default": "Alt+Shift+Z" },

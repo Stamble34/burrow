@@ -50,13 +50,22 @@
     .fading { transition: opacity 1.2s ease; opacity: .55; }
     .toast { display: flex; align-items: center; gap: 12px; }
     .toast .act { all: unset; cursor: pointer; color: var(--accent); white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
+    /* The transparent bottom border bridges the gap to the pill, so the line stays while the mouse moves up to it. */
+    .ctx { pointer-events: auto; display: none; max-width: min(560px, calc(100vw - 28px)); padding: 7px 11px; border-radius: 10px;
+      background: var(--bg); background-clip: padding-box; border: 1px solid var(--line); border-bottom: 7px solid transparent;
+      color: var(--text-2); cursor: pointer; line-height: 1.4; }
+    .ctx b { color: var(--text); font-weight: 600; }
+    .ctx q { color: var(--text); }
+    .ctx:hover { border-color: color-mix(in oklab, var(--accent) 45%, transparent); }
+    .crumbs:hover .ctx, .ctx:hover { display: block; }
+    .crumbs { display: flex; flex-direction: column; align-items: flex-start; }
     .in { animation: in .16s ease-out; }
     @keyframes in { from { opacity: 0; transform: translateY(6px); } }
   </style>
   <div class="stack">
     <div class="box" id="prompt" tabindex="-1" hidden></div>
     <div class="box toast" id="toast" tabindex="-1" hidden></div>
-    <div class="pill" id="pill" hidden></div>
+    <div class="crumbs"><div class="ctx" id="ctx" title="Go back to where you dove from"></div><div class="pill" id="pill" hidden></div></div>
   </div>`;
   document.documentElement.appendChild(host);
   const $ = (s) => root.querySelector(s);
@@ -82,7 +91,16 @@
           `<span class="dot s-${esc(c.status)}${c.open ? ' open' : ''}"></span><span class="t">${esc(c.title || 'Untitled')}</span></button>`;
       }).join('') + (view.bound ? `<span class="depth">· ${view.trail.length} deep</span>` : '');
     pill.hidden = false;
+    // Hovering the pill shows where this card came from: "From BFS: “…the sentence…”".
+    const cur = view.bound && view.trail[last];
+    const ctx = $('#ctx');
+    if (cur && cur.context) {
+      ctx.innerHTML = `From <b>${esc(cur.context.fromTitle || 'the page before')}</b>: <q>${esc(cur.context.text.length > 220 ? cur.context.text.slice(0, 217) + '…' : cur.context.text)}</q>`;
+      ctx.dataset.id = cur.id;
+      ctx.style.display = ''; // shown on hover by CSS
+    } else { ctx.innerHTML = ''; ctx.removeAttribute('data-id'); ctx.style.display = 'none'; }
   }
+  $('#ctx').addEventListener('click', () => { const id = $('#ctx').dataset.id; if (id) port.postMessage({ t: 'from', cardId: id }); });
   $('#pill').addEventListener('click', (e) => {
     const b = e.target.closest('.seg');
     if (b) port.postMessage({ t: 'go', cardId: b.dataset.id });
@@ -171,11 +189,109 @@
     port.postMessage({ t: 'cmd', name: hit.name });
   }, true);
 
+  // ---------- what you dove from ----------
+  let lastContextTarget = null;
+  document.addEventListener('contextmenu', (e) => { lastContextTarget = e.target; }, true);
+
+  const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const blockOf = (node) => {
+    const el = node && (node.nodeType === 1 ? node : node.parentElement);
+    return (el && el.closest('p, li, td, th, dd, dt, blockquote, figcaption, h1, h2, h3, h4, h5, h6, pre')) || (el && el.parentElement) || document.body;
+  };
+  // The sentence of `block` that contains `words`.
+  function sentenceAround(block, words) {
+    const text = clean(block.textContent);
+    const at = Math.max(0, text.indexOf(words));
+    const parts = text.split(/(?<=[.!?])\s+(?=[A-Z0-9“"(])/);
+    let pos = 0;
+    for (const p of parts) { if (at < pos + p.length + 1) return p.slice(0, 600); pos += p.length + 1; }
+    return text.slice(0, 600);
+  }
+  // A #:~:text= link that scrolls to these words (short quotes whole, long ones by first and last words).
+  function fragmentFor(words) {
+    const enc = (s) => encodeURIComponent(s).replace(/-/g, '%2D').replace(/,/g, '%2C');
+    const w = clean(words).split(' ');
+    const spec = w.length <= 8 ? enc(w.join(' ')) : enc(w.slice(0, 4).join(' ')) + ',' + enc(w.slice(-4).join(' '));
+    return location.href.replace(/#.*$/, '') + '#:~:text=' + spec;
+  }
+  function grab(kind, url) {
+    if (kind === 'selection') {
+      const sel = getSelection();
+      const text = clean(sel && sel.toString());
+      if (!text) return null;
+      const block = blockOf(sel.getRangeAt(0).startContainer);
+      return { text, sentence: sentenceAround(block, text), fragmentUrl: fragmentFor(text) };
+    }
+    let a = lastContextTarget && lastContextTarget.closest && lastContextTarget.closest('a[href]');
+    if (!a || a.href !== url) a = [...document.querySelectorAll('a[href]')].find((x) => x.href === url) || null;
+    if (!a) return null;
+    const text = clean(a.textContent);
+    const sentence = sentenceAround(blockOf(a), text);
+    return { text, sentence, fragmentUrl: fragmentFor(sentence.length > 4 ? sentence : text) };
+  }
+  browser.runtime.onMessage.addListener((m) => (m.t === 'grab' ? Promise.resolve(grab(m.kind, m.url)) : undefined));
+
+  // ---------- return anchors ----------
+  // When this tab is hidden, remember where you were: the scroll position, and the words at the top of
+  // what you were reading (survives layout changes). Coming back to a reopened page uses them.
+  function readingAnchor() {
+    if (scrollY < 150) return { scroll: 0, fragment: null };
+    const el = document.elementFromPoint(innerWidth / 2, Math.min(160, innerHeight / 4));
+    const block = el && el !== document.body && el !== document.documentElement && el.closest('p, li, h1, h2, h3, h4, pre, td, blockquote');
+    const words = block ? clean(block.textContent).split(' ').slice(0, 8).join(' ') : '';
+    return { scroll: Math.round(scrollY), fragment: words.length > 12 ? words : null };
+  }
+  let lastAnchor = '';
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden' || !view || !view.bound) return;
+    const a = readingAnchor(); const key = a.scroll + '|' + a.fragment;
+    if (key === lastAnchor) return;
+    lastAnchor = key;
+    port.postMessage({ t: 'anchor', url: location.href, ...a });
+  });
+
+  // Find these words on the page (text fragments don't fire for tabs an extension opens). Pages repeat
+  // text, so with several matches take the one nearest where you were (`nearY`).
+  function findText(words, nearY) {
+    const want = clean(words).toLowerCase();
+    if (!want) return null;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, {
+      acceptNode: (n) => (/^(P|LI|H[1-6]|PRE|TD|BLOCKQUOTE|DD|FIGCAPTION|SPAN|DIV)$/.test(n.tagName) && clean(n.textContent).toLowerCase().includes(want) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP),
+    });
+    const hits = []; let n;
+    while ((n = walker.nextNode())) hits.push(n);
+    // Keep the innermost elements only (a <div> around a matching <p> is the same place).
+    const inner = hits.filter((h) => !hits.some((o) => o !== h && h.contains(o)));
+    if (!inner.length) return null;
+    if (nearY == null) return inner[0];
+    const top = (el) => el.getBoundingClientRect().top + scrollY;
+    return inner.reduce((a, b) => (Math.abs(top(b) - nearY) < Math.abs(top(a) - nearY) ? b : a));
+  }
+  function restore(anchor) {
+    if (!anchor) return;
+    const go = () => {
+      const el = anchor.fragment && findText(anchor.fragment, anchor.scroll ? anchor.scroll + Math.min(160, innerHeight / 4) : null);
+      if (el) {
+        el.scrollIntoView({ block: anchor.center ? 'center' : 'start' });
+        if (anchor.center) flash(el);
+        else scrollBy(0, -Math.min(160, innerHeight / 4));
+      } else if (anchor.scroll) scrollTo(0, anchor.scroll);
+    };
+    go(); setTimeout(go, 600); // pages that lay out late
+  }
+  function flash(el) {
+    const prev = el.style.backgroundColor, prevT = el.style.transition;
+    el.style.transition = 'background-color 1.6s ease';
+    el.style.backgroundColor = 'rgba(184,164,255,.35)';
+    setTimeout(() => { el.style.backgroundColor = prev; setTimeout(() => { el.style.transition = prevT; }, 1700); }, 900);
+  }
+
   // ---------- messages ----------
   port.onMessage.addListener((m) => {
     if (m.t === 'view') { view = m; renderPill(); }
     else if (m.t === 'prompt') showPrompt(m);
     else if (m.t === 'toast') showToast(m);
+    else if (m.t === 'restore') restore(m.anchor);
   });
   port.onDisconnect.addListener(() => host.remove());
 })();

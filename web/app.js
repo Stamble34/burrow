@@ -637,7 +637,7 @@
   }
   // Card and details links go through openLink too (plain clicks only; modifier clicks keep their default).
   document.addEventListener('click', (e) => {
-    const a = e.target.closest('a.src, #dSources a');
+    const a = e.target.closest('a.src, #dSources a, a.d-context[href]');
     if (!a || e.button !== 0 || e.ctrlKey || e.shiftKey || e.metaKey || e.altKey) return;
     e.preventDefault();
     const card = a.closest('.card');
@@ -1232,7 +1232,7 @@
   });
 
   // ---------- details panel ----------
-  const dEls = { panel: $('#details'), title: $('#dTitle'), url: $('#dUrl'), sources: $('#dSources'), note: $('#dNote'), rel: $('#dRel'), seg: $('#statusSeg') };
+  const dEls = { panel: $('#details'), title: $('#dTitle'), url: $('#dUrl'), sources: $('#dSources'), context: $('#dContext'), note: $('#dNote'), rel: $('#dRel'), seg: $('#statusSeg') };
   function openDetails(id) {
     if (!state.cards[id]) return;
     detailsId = id;
@@ -1250,6 +1250,14 @@
     dEls.sources.innerHTML = more.map((u, i) => `<li><a href="${esc(u.url)}" target="_blank" rel="noopener" title="${esc(u.url)}">${esc(u.title || hostOf(u.url))}</a>` +
       `<span class="src-host">${esc(hostOf(u.url))}</span><button class="icon-btn" data-drop="${i + 1}" title="Remove this page">${icon('x')}</button></li>`).join('');
     dEls.sources.hidden = !more.length;
+    // Where this card was dived from: the sentence, linking back to it on the page.
+    const ctx = c.context && c.context.text ? c.context : null;
+    dEls.context.hidden = !ctx;
+    if (ctx) {
+      const from = ctx.fromCardId && state.cards[ctx.fromCardId];
+      dEls.context.innerHTML = `From <b>${esc(from ? from.title : 'a page')}</b>: <q>${esc(ctx.text)}</q>`;
+      if (ctx.fromUrl) dEls.context.href = ctx.fromUrl; else dEls.context.removeAttribute('href');
+    }
     if (force || act !== dEls.note) dEls.note.value = c.note || '';
     for (const b of dEls.seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.status === c.status);
     const row = (x) => `<li><button data-id="${x.id}"><span class="sdot s-${x.status}"></span>${esc(x.title || 'Untitled')}</button></li>`;
