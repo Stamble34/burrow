@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Burrow settings</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 16px; max-width: 520px; }
+  label { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; }
+  input { margin-top: 4px; }
+  small { display: block; opacity: .7; }
+</style>
+<label><input type="checkbox" id="prompt">
+  <span>Ask before adding pages opened from a card
+  <small>When off, pages are only added with the capture shortcut or the right-click menu.</small></span></label>
+<label><input type="checkbox" id="crumb">
+  <span>Show the breadcrumb on pages
+  <small>Also toggled with the breadcrumb shortcut.</small></span></label>
+<p><small>Change the shortcuts in about:addons → gear icon → Manage Extension Shortcuts.</small></p>
+<script src="options.js"></script>

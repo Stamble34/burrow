@@ -20,6 +20,7 @@
   --todo: #8fb8ff;
   --doing: #f6d97a;
   --done: #5f5f69;
+  --parked: #9a8f80;
 
   --font: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
   --mono: "Geist Mono", ui-monospace, monospace;
@@ -140,6 +141,7 @@ kbd {
 .sdot.s-todo { background: var(--todo); }
 .sdot.s-doing { background: var(--doing); box-shadow: 0 0 0 3px color-mix(in oklab, var(--doing) 22%, transparent); }
 .sdot.s-done { background: transparent; border: 1.5px solid var(--done); }
+.sdot.s-parked { background: transparent; border: 1.5px dashed var(--parked); }
 
 .card-title { font-weight: 600; font-size: 14px; line-height: 1.38; letter-spacing: -0.005em; overflow-wrap: break-word; hyphens: auto; min-height: 19px; }
 .card-meta { display: flex; align-items: center; gap: 8px; margin: 7px 0 0 18px; font-size: 12px; color: var(--text-3); min-height: 0; }
@@ -158,6 +160,17 @@ kbd {
 .card.s-done { background: #0c0c0e; border-color: rgba(255,255,255,.05); }
 .card.s-done .card-title { color: var(--text-3); }
 .card.s-done .src { color: var(--text-3); }
+.card.s-parked { border-style: dashed; border-color: color-mix(in oklab, var(--parked) 40%, transparent); }
+.card.s-parked .card-title { color: var(--text-2); }
+.tab-dot { position: absolute; top: 9px; right: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 20%, transparent); }
+.meta-more { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.d-sources { list-style: none; margin: -4px 0 14px; padding: 0; display: grid; gap: 2px; }
+.d-sources li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; }
+.d-sources a { color: var(--text-2); text-decoration: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.d-sources a:hover { color: var(--accent); }
+.d-sources .src-host { color: var(--text-3); white-space: nowrap; margin-left: auto; }
+.d-sources .icon-btn { width: 22px; height: 22px; flex: none; }
+.d-sources .icon-btn svg { width: 12px; height: 12px; }
 .card.ready { border-color: var(--accent-line); }
 
 .card:hover { border-color: var(--border-strong); }
@@ -195,6 +208,7 @@ kbd {
 #world.far .card.s-todo { background: color-mix(in oklab, var(--todo) 16%, var(--surface)); border-color: color-mix(in oklab, var(--todo) 60%, transparent); }
 #world.far .card.s-doing { background: color-mix(in oklab, var(--doing) 18%, var(--surface)); border-color: color-mix(in oklab, var(--doing) 70%, transparent); }
 #world.far .card.s-done { background: #131316; }
+#world.far .card.s-parked { background: #131316; }
 #world.far .card.selected { border-color: var(--accent) !important; }
 #world.far .link { stroke-width: 3; }
 #world.far .link.trail { stroke-width: 4.5; }

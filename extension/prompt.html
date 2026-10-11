@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Burrow</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #111114; color: #ececf1; font: 13.5px/1.4 system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; justify-content: center; padding: 14px 16px; box-sizing: border-box; outline: none; }
+  b { font-weight: 600; }
+  .note { color: #a4a4b0; margin-top: 3px; font-size: 12.5px; }
+  .keys { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; color: #a4a4b0; font-size: 12.5px; }
+  button { all: unset; cursor: pointer; display: inline-flex; gap: 5px; align-items: center; }
+  button:hover { color: #ececf1; }
+  kbd { font: 11px/1 ui-monospace, monospace; color: #ececf1; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.09); border-radius: 5px; padding: 3px 5px; }
+</style>
+<body tabindex="-1">
+  <div id="q">…</div>
+  <div class="note" id="note" hidden></div>
+  <div class="keys">
+    <button data-c="child"><kbd>↵</kbd> Add</button>
+    <button data-c="sibling" id="sib"><kbd>⇧</kbd><kbd>↵</kbd> Next to it</button>
+    <button data-c="ignore"><kbd>Esc</kbd> Ignore</button>
+  </div>
+  <script src="prompt.js"></script>
+</body>

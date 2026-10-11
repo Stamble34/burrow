@@ -29,7 +29,18 @@ function load() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   if (fs.existsSync(DATA_FILE)) {
     try {
-      state = shared.normalize(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+      const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      if ((raw.version || 1) < shared.VERSION) {
+        // Keep the file exactly as it was before changing its shape.
+        fs.mkdirSync(BACKUP_DIR, { recursive: true });
+        const keep = path.join(BACKUP_DIR, `burrow-v${raw.version || 1}-before-migration-${Date.now()}.json`);
+        fs.copyFileSync(DATA_FILE, keep);
+        console.log(`[burrow] Migrating data to version ${shared.VERSION}. The old file is kept at ${keep}`);
+        state = shared.normalize(raw);
+        saveNow();
+      } else {
+        state = shared.normalize(raw);
+      }
     } catch (e) {
       const broken = DATA_FILE + '.broken-' + Date.now();
       fs.copyFileSync(DATA_FILE, broken);
@@ -94,6 +105,81 @@ function applyOps(ops, clientId) {
 
 setInterval(() => { for (const res of streams) res.write(': ping\n\n'); }, 25000).unref();
 
+// ---------- shared undo history ----------
+// One history for the app and the browser extension. An entry is the ops, their inverse, and
+// `effects`: what the browser did alongside (tab bound, tab closed, ...), which the extension reverses.
+const history = { done: [], undone: [] };
+const HISTORY_MAX = 300;
+const COALESCE_MS = 2500;
+
+function applyRecorded(ops, clientId) {
+  const applied = []; const inverse = [];
+  for (const op of ops || []) {
+    const inv = shared.inverseOf(state, op);
+    if (shared.applyOp(state, op)) { applied.push(op); inverse.unshift(...inv); }
+  }
+  if (applied.length) { rev++; scheduleSave(); broadcast({ rev, clientId: clientId || null, ops: applied }); }
+  return { applied, inverse };
+}
+
+const entrySummary = (e) => ({ id: e.id, label: e.label, effects: e.effects, source: e.source });
+
+// opts: label, effects, coalesce (key), sticky (coalesce regardless of time), inverse (precomputed by the client), source
+function record(ops, opts = {}) {
+  let applied, inverse;
+  if (opts.inverse) { applied = applyOps(ops, opts.clientId); inverse = opts.inverse; } else ({ applied, inverse } = applyRecorded(ops, opts.clientId));
+  if (!applied.length && !(opts.effects && opts.effects.length)) return null;
+  const last = history.done[history.done.length - 1];
+  const now = Date.now();
+  if (opts.coalesce && last && last.key === opts.coalesce && (opts.sticky || now - last.at < COALESCE_MS)) {
+    last.ops.push(...applied); last.inverse.unshift(...inverse); last.effects.push(...(opts.effects || [])); last.at = now;
+    if (opts.sticky && opts.label) last.label = opts.label;
+    return last;
+  }
+  const entry = { id: shared.uid('h_'), label: opts.label || 'Edit', ops: applied, inverse, effects: opts.effects || [],
+    key: opts.coalesce || null, at: now, source: opts.source || 'app' };
+  history.done.push(entry);
+  if (history.done.length > HISTORY_MAX) history.done.shift();
+  history.undone.length = 0;
+  return entry;
+}
+
+// An abandoned new card leaves no trace: drop the entry that created it instead of recording its removal.
+function absorb(ops, clientId) {
+  const last = history.done[history.done.length - 1];
+  const dels = ops.filter((o) => o.t === 'card.del').map((o) => o.id);
+  if (last && dels.length && last.ops.some((o) => o.t === 'card.put' && dels.includes(o.card.id))) history.done.pop();
+  applyOps(ops, clientId);
+}
+
+function undo(clientId) {
+  const e = history.done.pop();
+  if (!e) return null;
+  applyOps(e.inverse, clientId);
+  history.undone.push(e);
+  broadcast({ history: { kind: 'undo', entry: entrySummary(e), clientId: clientId || null } });
+  return e;
+}
+
+function redo(clientId) {
+  const e = history.undone.pop();
+  if (!e) return null;
+  applyOps(e.ops, clientId);
+  history.done.push(e);
+  broadcast({ history: { kind: 'redo', entry: entrySummary(e), clientId: clientId || null } });
+  return e;
+}
+
+// ---------- open browser tabs ----------
+// The extension reports which tabs show which card. Kept in memory only: tab ids die with the browser.
+let openTabs = [];
+let tabsOwner = null;
+function setTabs(list, clientId) {
+  openTabs = (Array.isArray(list) ? list : []).filter((t) => t && state.cards[t.cardId]).map((t) => ({ tabId: t.tabId, cardId: t.cardId, active: !!t.active }));
+  tabsOwner = clientId || null;
+  broadcast({ tabs: openTabs });
+}
+
 // ---------- page titles ----------
 function decodeEntities(s) {
   return s.replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos|nbsp|#39);/gi, (m, e) => {
@@ -124,52 +210,133 @@ async function fetchTitle(url) {
   }
 }
 
-// ---------- capture from the browser ----------
+// ---------- adding pages from the browser ----------
 function boardCards(boardId) {
   return Object.values(state.cards).filter(c => c.boardId === boardId);
 }
 
-async function capture({ url, title, note, boardId }) {
+function cardOnBoardWithUrl(boardId, url) {
+  const k = shared.urlKey(url);
+  return k ? boardCards(boardId).find(c => (c.urls || []).some(u => shared.urlKey(u.url) === k)) : null;
+}
+
+function spotUnder(parent, cards) {
+  if (parent) {
+    const kids = shared.kidsOf(state, parent.id);
+    return { y: parent.y + 150, x: kids.length ? Math.max(...kids.map(k => k.x)) + CARD_W + 24 : parent.x };
+  }
+  if (cards.length) return { x: Math.max(...cards.map(c => c.x)) + CARD_W + 48, y: Math.min(...cards.map(c => c.y)) };
+  return { x: 0, y: 0 };
+}
+
+// Where a page goes: under `parentId` (a card bound to the tab it was opened from), next to it with
+// `sibling`, or by default under the capture target of the active board.
+function placement({ parentId, sibling, boardId }) {
+  let parent = parentId && state.cards[parentId] ? state.cards[parentId] : null;
+  let bId = parent ? parent.boardId : (state.boards[boardId] ? boardId : state.settings.activeBoardId);
+  if (!parent && !parentId) {
+    const b = state.boards[bId];
+    parent = b && b.focusId && state.cards[b.focusId] ? state.cards[b.focusId] : null;
+  }
+  const anchor = parent;
+  if (sibling && parent) parent = shared.parentsOf(state, parent.id)[0] || null;
+  return { parent, anchor, boardId: bId, board: state.boards[bId] };
+}
+
+function preview({ url, title, parentId, sibling }) {
+  const { parent, board } = placement({ parentId, sibling });
+  const existing = url ? cardOnBoardWithUrl(board.id, url) : null;
+  const t = shared.cleanTitle(title || '', url);
+  const known = existing ? null : shared.findConcept(state, { title: t, url }, board.id);
+  return {
+    title: existing ? existing.title : t,
+    parent: parent ? { id: parent.id, title: parent.title } : null,
+    board: { id: board.id, name: board.name },
+    existing: existing ? {
+      id: existing.id, title: existing.title, status: existing.status,
+      linkedUnder: !!(parent && Object.values(state.links).some(l => l.from === parent.id && l.to === existing.id)),
+    } : null,
+    known: known ? { status: known.status, board: state.boards[known.boardId].name } : null,
+  };
+}
+
+async function capture({ url, title, note, boardId, parentId, sibling, effects, label, clientId }) {
   url = String(url || '').trim();
   let rawTitle = String(title || '').trim();
   if (!rawTitle && url) rawTitle = (await fetchTitle(url)) || '';
-  const bId = state.boards[boardId] ? boardId : state.settings.activeBoardId;
-  const board = state.boards[bId];
+  const { parent, anchor, board } = placement({ parentId, sibling, boardId });
+  const bId = board.id;
   const cards = boardCards(bId);
-  const parent = board.focusId && state.cards[board.focusId] ? state.cards[board.focusId] : null;
   const ops = [];
 
-  // Same page already on this board: just make sure it hangs under the focused card.
-  const existing = url ? cards.find(c => c.url && c.url === url) : null;
+  const withCard = (id) => (effects || []).map(fx => (fx.kind === 'bind' && !fx.cardId ? { ...fx, cardId: id } : fx));
+
+  // Same page already on this board: just make sure it hangs under the parent.
+  const existing = url ? cardOnBoardWithUrl(bId, url) : null;
   if (existing) {
-    if (parent && parent.id !== existing.id) {
+    effects = withCard(existing.id);
+    if (parent && parent.id !== existing.id && !Object.values(state.links).some(l => l.from === parent.id && l.to === existing.id)) {
       ops.push({ t: 'link.put', link: { id: shared.uid('l_'), boardId: bId, from: parent.id, to: existing.id } });
     }
-    applyOps(ops, 'capture');
-    return { card: existing, parent, existing: true, board };
+    const entry = record(ops, { label: label || `Linked “${existing.title}”`, effects, source: 'browser', clientId });
+    return { card: existing, parent, existing: true, board, entry };
   }
 
-  let x, y;
-  if (parent) {
-    const kids = Object.values(state.links).filter(l => l.from === parent.id).map(l => state.cards[l.to]).filter(Boolean);
-    y = parent.y + 150;
-    x = kids.length ? Math.max(...kids.map(k => k.x)) + CARD_W + 24 : parent.x;
-  } else if (cards.length) {
-    x = Math.max(...cards.map(c => c.x)) + CARD_W + 48;
-    y = Math.min(...cards.map(c => c.y));
-  } else { x = 0; y = 0; }
-
+  let spot = spotUnder(parent, cards);
+  if (sibling && anchor && !parent) spot = { x: anchor.x + CARD_W + 24, y: anchor.y };
   const card = {
-    id: shared.uid('c_'), boardId: bId, title: shared.cleanTitle(rawTitle, url), url: url || '',
-    note: note ? String(note).slice(0, 4000) : '', status: 'todo', x, y, createdAt: Date.now(), source: 'capture',
+    id: shared.uid('c_'), boardId: bId, title: shared.cleanTitle(rawTitle, url),
+    urls: url ? [{ url, title: rawTitle, visitedAt: Date.now() }] : [],
+    note: note ? String(note).slice(0, 4000) : '', status: 'todo', x: spot.x, y: spot.y, createdAt: Date.now(), source: 'capture',
   };
   ops.push({ t: 'card.put', card });
+  effects = withCard(card.id);
   // The same concept on another board: share it, so what is understood there is understood here.
   const known = shared.findConcept(state, card, bId);
   if (known) ops.push(...shared.joinOps(known, card));
   if (parent) ops.push({ t: 'link.put', link: { id: shared.uid('l_'), boardId: bId, from: parent.id, to: card.id } });
-  applyOps(ops, 'capture');
-  return { card: state.cards[card.id] || card, parent, existing: false, board, known: known ? state.boards[known.boardId].name : null };
+  const entry = record(ops, {
+    label: label || `Added “${card.title}”${parent ? ` under “${parent.title}”` : ''}`, effects, source: 'browser', clientId,
+  });
+  return { card: state.cards[card.id] || card, parent, existing: false, board, known: known ? state.boards[known.boardId].name : null, entry };
+}
+
+// Same-tab navigation: the page becomes another source of the card. Not an undo step.
+function addSource({ cardId, url, title }) {
+  const c = state.cards[cardId];
+  if (!c || !/^https?:/i.test(url || '')) return false;
+  const k = shared.urlKey(url);
+  if ((c.urls || []).some(u => shared.urlKey(u.url) === k)) return false;
+  const urls = [...(c.urls || []), { url, title: String(title || '').slice(0, 300), visitedAt: Date.now() }].slice(-30);
+  applyOps([{ t: 'card.put', card: { id: c.id, boardId: c.boardId, urls } }], 'browser');
+  return true;
+}
+
+const crumbOf = (c) => ({ id: c.id, title: c.title, status: c.status, url: shared.primaryUrl(c) });
+
+// Trails for the breadcrumb strip: one per bound card, plus the capture target for unbound tabs.
+function crumbs(cardIds, prefer) {
+  const out = {};
+  for (const id of cardIds || []) if (state.cards[id]) out[id] = shared.trailOf(state, id, prefer).map(crumbOf);
+  const b = state.boards[state.settings.activeBoardId];
+  const f = b && b.focusId && state.cards[b.focusId];
+  return { trails: out, focus: f ? shared.trailOf(state, f.id).map(crumbOf) : [], board: b ? b.name : null, accent: state.settings.accent };
+}
+
+// After a browser restart: which card does each open URL belong to?
+function match(urls) {
+  const out = {};
+  for (const url of urls || []) {
+    const k = shared.urlKey(url);
+    if (!k) continue;
+    let best = null;
+    for (const c of Object.values(state.cards)) {
+      if (!(c.urls || []).some(u => shared.urlKey(u.url) === k)) continue;
+      if (!best || c.createdAt > best.createdAt) best = c;
+    }
+    if (best) out[url] = best.id;
+  }
+  return out;
 }
 
 // ---------- http ----------
@@ -237,14 +404,64 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/health') return send(res, 200, { ok: true, app: 'burrow', rev, dataFile: DATA_FILE }, cors);
 
-    if (p === '/api/state' && req.method === 'GET') return send(res, 200, { rev, state });
+    if (p === '/api/state' && req.method === 'GET') return send(res, 200, { rev, state }, cors);
 
     if (p === '/api/events' && req.method === 'GET') {
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
-      res.write(`retry: 1500\ndata: ${JSON.stringify({ hello: true, rev })}\n\n`);
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', ...cors });
+      res.write(`retry: 1500\ndata: ${JSON.stringify({ hello: true, rev, tabs: openTabs })}\n\n`);
       streams.add(res);
-      req.on('close', () => streams.delete(res));
+      const who = u.searchParams.get('clientId');
+      req.on('close', () => {
+        streams.delete(res);
+        // The browser went away: its tabs are no longer open.
+        if (who && who === tabsOwner) setTabs([], null);
+      });
       return;
+    }
+
+    if (p === '/api/do' && req.method === 'POST') {
+      const body = await readBody(req);
+      const ops = Array.isArray(body.ops) ? body.ops : [];
+      if (body.absorb) { absorb(ops, body.clientId); return send(res, 200, { ok: true, rev }, cors); }
+      const e = record(ops, { label: body.label, effects: body.effects, coalesce: body.coalesce, sticky: body.sticky, inverse: body.inverse, source: body.source, clientId: body.clientId });
+      return send(res, 200, { ok: true, rev, entry: e ? entrySummary(e) : null }, cors);
+    }
+
+    if ((p === '/api/undo' || p === '/api/redo') && req.method === 'POST') {
+      const body = await readBody(req);
+      const e = p === '/api/undo' ? undo(body.clientId) : redo(body.clientId);
+      if (!e) return send(res, 200, { ok: true, empty: true }, cors);
+      return send(res, 200, { ok: true, rev, entry: entrySummary(e), ops: p === '/api/undo' ? e.inverse : e.ops, orig: e.ops }, cors);
+    }
+
+    if (p === '/api/history' && req.method === 'GET') {
+      const top = (a) => (a.length ? entrySummary(a[a.length - 1]) : null);
+      return send(res, 200, { ok: true, undo: top(history.done), redo: top(history.undone) }, cors);
+    }
+
+    if (p === '/api/tabs') {
+      if (req.method === 'POST') { const body = await readBody(req); setTabs(body.tabs, body.clientId); }
+      return send(res, 200, { ok: true, tabs: openTabs }, cors);
+    }
+
+    if (p === '/api/crumbs' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, rev, ...crumbs(body.cardIds, body.prefer) }, cors);
+    }
+
+    if (p === '/api/match' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, cards: match(body.urls) }, cors);
+    }
+
+    if (p === '/api/preview' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, ...preview(body) }, cors);
+    }
+
+    if (p === '/api/source' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, added: addSource(body) }, cors);
     }
 
     if (p === '/api/ops' && req.method === 'POST') {
@@ -259,8 +476,9 @@ const server = http.createServer(async (req, res) => {
       const r = await capture(body);
       return send(res, 200, {
         ok: true, existing: r.existing, board: { id: r.board.id, name: r.board.name },
-        card: { id: r.card.id, title: r.card.title },
+        card: { id: r.card.id, title: r.card.title, status: r.card.status },
         parent: r.parent ? { id: r.parent.id, title: r.parent.title } : null,
+        known: r.known || null, entry: r.entry ? entrySummary(r.entry) : null,
       }, cors);
     }
 

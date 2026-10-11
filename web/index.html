@@ -95,6 +95,7 @@
           <button data-status="todo"><span class="sdot s-todo"></span>To learn</button>
           <button data-status="doing"><span class="sdot s-doing"></span>Learning</button>
           <button data-status="done"><span class="sdot s-done"></span>Understood</button>
+          <button data-status="parked"><span class="sdot s-parked"></span>Parked</button>
         </div>
         <button class="icon-btn" id="detailsClose" title="Close (Esc)"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
       </div>
@@ -104,6 +105,7 @@
         <input id="dUrl" placeholder="Paste a link" spellcheck="false">
         <button class="icon-btn" id="dOpen" title="Open link (O)"><svg viewBox="0 0 24 24"><use href="#i-ext"/></svg></button>
       </div>
+      <ul class="d-sources" id="dSources" hidden></ul>
       <label class="d-label" for="dNote">Notes</label>
       <textarea id="dNote" class="d-note" placeholder="What clicked, what's still fuzzy…"></textarea>
       <div class="d-rel" id="dRel"></div>

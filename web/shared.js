@@ -5,15 +5,16 @@
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.BurrowShared = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
-  const STATUSES = ['todo', 'doing', 'done'];
+  const STATUSES = ['todo', 'doing', 'done', 'parked'];
+  const VERSION = 2;
   // A concept is the set of cards (one per board) that share a conceptId.
-  // These fields are the concept itself; position and links stay per board.
-  const CONCEPT_FIELDS = ['title', 'url', 'note', 'status', 'doneAt'];
-  const RANK = { todo: 0, doing: 1, done: 2 };
+  // These fields are the concept itself; position, links and `context` stay per board.
+  const CONCEPT_FIELDS = ['title', 'urls', 'note', 'status', 'doneAt', 'parkedAt'];
+  const RANK = { todo: 0, parked: 0, doing: 1, done: 2 };
 
   function emptyState() {
     return {
-      version: 1,
+      version: VERSION,
       boards: {},
       cards: {},
       links: {},
@@ -31,7 +32,7 @@
     const base = emptyState();
     if (!s || typeof s !== 'object') return base;
     const out = {
-      version: 1,
+      version: VERSION,
       boards: s.boards && typeof s.boards === 'object' ? s.boards : {},
       cards: s.cards && typeof s.cards === 'object' ? s.cards : {},
       links: s.links && typeof s.links === 'object' ? s.links : {},
@@ -40,6 +41,7 @@
     for (const id in out.cards) {
       const c = out.cards[id];
       if (!STATUSES.includes(c.status)) c.status = 'todo';
+      migrateCard(c);
       if (typeof c.x !== 'number') c.x = 0;
       if (typeof c.y !== 'number') c.y = 0;
       if (!out.boards[c.boardId]) delete out.cards[id];
@@ -55,6 +57,19 @@
     return out;
   }
 
+  // Version 1 cards had one `url`; now a card keeps every page it was read on, primary first.
+  function migrateCard(c) {
+    if (typeof c.url === 'string' || !Array.isArray(c.urls)) {
+      const urls = Array.isArray(c.urls) ? c.urls : [];
+      if (typeof c.url === 'string' && c.url && !urls.some((u) => u.url === c.url)) urls.unshift({ url: c.url, title: c.title || '', visitedAt: c.createdAt || null });
+      c.urls = urls;
+      delete c.url;
+    }
+    return c;
+  }
+
+  const primaryUrl = (c) => (c && c.urls && c.urls[0] && c.urls[0].url) || '';
+
   // Apply one op in place. Returns true if something changed.
   function applyOp(s, op) {
     switch (op.t) {
@@ -62,7 +77,12 @@
         const c = op.card;
         if (!c || !c.id || !s.boards[c.boardId]) return false;
         const prev = s.cards[c.id];
+        if ('url' in c) { // an op from an older client
+          const legacy = c.url; delete c.url;
+          if (!('urls' in c)) c.urls = legacy ? [{ url: legacy, title: c.title || (prev && prev.title) || '', visitedAt: Date.now() }, ...((prev && prev.urls) || []).filter((u) => u.url !== legacy)] : ((prev && prev.urls) || []).slice(1);
+        }
         const next = Object.assign({}, prev || {}, c);
+        if (!Array.isArray(next.urls)) next.urls = [];
         s.cards[c.id] = next;
         if (next.conceptId) {
           const sibs = conceptCards(s, next.conceptId).filter((o) => o.id !== next.id);
@@ -149,13 +169,14 @@
   }
 
   // The best-known card on another board that is the same concept as this title/url.
-  function findConcept(s, { title, url }, boardId) {
-    const tk = titleKey(title), uk = url ? urlKey(url) : '';
+  function findConcept(s, card, boardId) {
+    const url = typeof card.url === 'string' ? card.url : primaryUrl(card);
+    const tk = titleKey(card.title), uk = url ? urlKey(url) : '';
     if (tk.length < 2 && !uk) return null;
     let best = null;
     for (const c of Object.values(s.cards)) {
       if (c.boardId === boardId) continue;
-      if (!((tk.length >= 2 && titleKey(c.title) === tk) || (uk && c.url && urlKey(c.url) === uk))) continue;
+      if (!((tk.length >= 2 && titleKey(c.title) === tk) || (uk && (c.urls || []).some((u) => urlKey(u.url) === uk)))) continue;
       if (!best || RANK[c.status] > RANK[best.status]) best = c;
     }
     return best;
@@ -197,6 +218,79 @@
     return { ops, concepts, cards };
   }
 
+  // The ops that undo `op`, computed against the state before it is applied.
+  function inverseOf(s, op) {
+    const copy = (o) => JSON.parse(JSON.stringify(o));
+    switch (op.t) {
+      case 'card.put': {
+        const prev = s.cards[op.card.id];
+        if (!prev) return [{ t: 'card.del', id: op.card.id }];
+        const back = copy(prev);
+        for (const k in op.card) if (!(k in prev)) back[k] = null;
+        return [{ t: 'card.put', card: back }];
+      }
+      case 'card.del': {
+        const prev = s.cards[op.id];
+        if (!prev) return [];
+        const ls = Object.values(s.links).filter((l) => l.from === op.id || l.to === op.id);
+        const out = [{ t: 'card.put', card: copy(prev) }, ...ls.map((l) => ({ t: 'link.put', link: { ...l } }))];
+        const b = Object.values(s.boards).find((x) => x.focusId === op.id);
+        if (b) out.push({ t: 'board.put', board: { id: b.id, focusId: op.id } });
+        return out;
+      }
+      case 'link.put': {
+        const prev = s.links[op.link.id];
+        return prev ? [{ t: 'link.put', link: { ...prev } }] : [{ t: 'link.del', id: op.link.id }];
+      }
+      case 'link.del': {
+        const prev = s.links[op.id];
+        return prev ? [{ t: 'link.put', link: { ...prev } }] : [];
+      }
+      case 'board.put': {
+        const prev = s.boards[op.board.id];
+        return prev ? [{ t: 'board.put', board: { ...prev } }] : [{ t: 'board.del', id: op.board.id }];
+      }
+      case 'board.del': {
+        const prev = s.boards[op.id];
+        if (!prev) return [];
+        const cs = Object.values(s.cards).filter((c) => c.boardId === op.id);
+        const ids = new Set(cs.map((c) => c.id));
+        const ls = Object.values(s.links).filter((l) => ids.has(l.from));
+        return [{ t: 'board.put', board: { ...prev } }, ...cs.map((c) => ({ t: 'card.put', card: copy(c) })), ...ls.map((l) => ({ t: 'link.put', link: { ...l } })),
+          { t: 'settings.put', settings: { activeBoardId: s.settings.activeBoardId } }];
+      }
+      case 'settings.put': {
+        const back = {};
+        for (const k in op.settings) back[k] = s.settings[k] ?? null;
+        return [{ t: 'settings.put', settings: back }];
+      }
+    }
+    return [];
+  }
+
+  // Apply ops and return the inverse that undoes all of them.
+  function applyWithInverse(s, ops) {
+    const inverse = [];
+    for (const op of ops) { inverse.unshift(...inverseOf(s, op)); applyOp(s, op); }
+    return inverse;
+  }
+
+  const parentsOf = (s, id) => Object.values(s.links).filter((l) => l.to === id && s.cards[l.from]).sort((a, b) => (a.id < b.id ? -1 : 1)).map((l) => s.cards[l.from]);
+  const kidsOf = (s, id) => Object.values(s.links).filter((l) => l.from === id && s.cards[l.to]).map((l) => s.cards[l.to]);
+
+  // Top-level card first, `id` last. With several parents it follows `prefer[cardId]` (the way you came)
+  // when that is still a parent, otherwise the first-made link.
+  function trailOf(s, id, prefer) {
+    const out = []; const seen = new Set();
+    let c = s.cards[id];
+    while (c && !seen.has(c.id)) {
+      seen.add(c.id); out.unshift(c);
+      const ps = parentsOf(s, c.id);
+      c = (prefer && ps.find((p) => p.id === prefer[c.id])) || ps[0];
+    }
+    return out;
+  }
+
   // "Wikipedia: Linked list - Wikipedia" -> "Linked list"
   function cleanTitle(title, url) {
     let t = String(title || '').replace(/\s+/g, ' ').trim();
@@ -218,5 +312,5 @@
     return t.slice(0, 200) || 'Untitled';
   }
 
-  return { STATUSES, CONCEPT_FIELDS, emptyState, uid, normalize, applyOp, cleanTitle, conceptCards, titleKey, urlKey, findConcept, joinOps, mergeRepeatedOps };
+  return { STATUSES, VERSION, CONCEPT_FIELDS, migrateCard, primaryUrl, inverseOf, applyWithInverse, parentsOf, kidsOf, trailOf, emptyState, uid, normalize, applyOp, cleanTitle, conceptCards, titleKey, urlKey, findConcept, joinOps, mergeRepeatedOps };
 });

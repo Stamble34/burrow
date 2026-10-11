@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "Burrow",
-  "version": "1.0.0",
-  "description": "Send the page or a link to Burrow as a prerequisite of the card you're working on.",
+  "version": "2.0.0",
+  "description": "Remembers the path out of a rabbit hole: tabs you open from a page become prerequisites of it in Burrow, with a breadcrumb on every page.",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -11,16 +11,25 @@
     "128": "icons/icon-128.png"
   },
   "permissions": [
-    "activeTab",
+    "tabs",
+    "webNavigation",
+    "sessions",
+    "storage",
     "contextMenus",
     "notifications",
+    "<all_urls>",
     "http://127.0.0.1/*"
   ],
   "background": {
-    "scripts": [
-      "background.js"
-    ]
+    "scripts": ["background.js"]
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "browser_action": {
     "default_title": "Add this page to Burrow (Alt+Shift+B)",
     "default_icon": {
@@ -28,18 +37,32 @@
       "32": "icons/icon-32.png"
     }
   },
+  "options_ui": {
+    "page": "options.html",
+    "browser_style": false
+  },
   "commands": {
     "capture-page": {
-      "suggested_key": {
-        "default": "Alt+Shift+B"
-      },
+      "suggested_key": { "default": "Alt+Shift+B" },
       "description": "Add this page to Burrow"
+    },
+    "undo": {
+      "suggested_key": { "default": "Alt+Shift+Z" },
+      "description": "Undo the last Burrow change"
+    },
+    "redo": {
+      "suggested_key": { "default": "Alt+Shift+Y" },
+      "description": "Redo"
+    },
+    "toggle-breadcrumb": {
+      "suggested_key": { "default": "Alt+Shift+H" },
+      "description": "Show or hide the breadcrumb"
     }
   },
   "browser_specific_settings": {
     "gecko": {
       "id": "{81f5643b-abb8-4868-9aae-6ba042f40208}",
-      "strict_min_version": "109.0"
+      "strict_min_version": "115.0"
     }
   }
 }

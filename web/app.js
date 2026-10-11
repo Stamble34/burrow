@@ -6,7 +6,7 @@
   const CARD_W = 240, GAP_X = 24, GAP_Y = 76, MIN_Z = 0.12, MAX_Z = 2.5;
   const clientId = S.uid('cl_');
   const desktop = window.burrowDesktop || null;
-  const STATUS_LABEL = { todo: 'To learn', doing: 'Learning', done: 'Understood' };
+  const STATUS_LABEL = { todo: 'To learn', doing: 'Learning', done: 'Understood', parked: 'Parked' };
   const ACCENTS = [
     ['Lilac', '#b8a4ff'], ['Mint', '#7ef0c0'], ['Peach', '#ffb48a'], ['Rose', '#ff9fc8'],
     ['Sky', '#86d4ff'], ['Lemon', '#eef08a'], ['Coral', '#ff8f8f'], ['Aqua', '#79e6e6'],
@@ -25,7 +25,6 @@
   const sizes = new Map();
   const cardEls = new Map();
   let graph = { kids: new Map(), pars: new Map() };
-  const undoStack = [], redoStack = [];
   const mouse = { x: innerWidth / 2, y: innerHeight / 2 };
 
   const els = {
@@ -49,6 +48,7 @@
   const parsOf = (id) => (graph.pars.get(id) || []).map((cid) => state.cards[cid]).filter(Boolean).sort((a, b) => a.x - b.x);
   const primary = () => (selected.size ? [...selected][selected.size - 1] : null);
   const isTyping = (t) => t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+  const urlOf = (c) => S.primaryUrl(c);
   const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return u; } };
   const keysHtml = (keys) => (keys || []).map((k) => `<kbd>${esc(k)}</kbd>`).join('');
   const lsGet = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
@@ -96,19 +96,29 @@
   const lastUpFrom = new Map(); // child -> parent you came down from
 
   // ---------- sync with the service ----------
+  // Edits go out in order. Undoable ones go to /api/do so the service records them in the shared
+  // history (the browser extension undoes from the same list); the rest go to /api/ops.
   let outbox = [], flushing = false, online = false;
+  let openTabs = new Set(); // card ids showing in a browser tab
 
-  function send(ops) { if (ops.length) { outbox.push(...ops); queueMicrotask(flush); } }
+  function send(ops) {
+    if (!ops.length) return;
+    const last = outbox[outbox.length - 1];
+    if (last && last.path === '/api/ops') last.body.ops.push(...ops);
+    else outbox.push({ path: '/api/ops', body: { clientId, ops: [...ops] } });
+    queueMicrotask(flush);
+  }
+  function sendRecorded(body) { outbox.push({ path: '/api/do', body: { clientId, ...body } }); queueMicrotask(flush); }
 
   async function flush() {
     if (flushing || !outbox.length) return;
     flushing = true;
-    const batch = outbox.splice(0);
+    const item = outbox[0];
     try {
-      const r = await fetch('/api/ops', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ clientId, ops: batch }) });
+      const r = await fetch(item.path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(item.body) });
       if (!r.ok) throw new Error(r.status);
+      outbox.shift();
     } catch (e) {
-      outbox.unshift(...batch);
       setOnline(false);
       flushing = false;
       setTimeout(flush, 2000);
@@ -116,6 +126,10 @@
     }
     flushing = false;
     if (outbox.length) flush();
+  }
+  async function drain() {
+    for (let i = 0; i < 50 && (outbox.length || flushing); i++) { flush(); await new Promise((r) => setTimeout(r, 40)); }
+    return !outbox.length;
   }
 
   function setOnline(v) {
@@ -136,6 +150,11 @@
     if (first) { restoreView(true); suggestRepeats(); }
   }
 
+  function setTabs(list) {
+    openTabs = new Set((list || []).map((t) => t.cardId));
+    if (loaded) syncCards();
+  }
+
   function connect() {
     const es = new EventSource('/api/events');
     es.onmessage = async (e) => {
@@ -143,9 +162,17 @@
       if (m.hello) {
         if (outbox.length) await flush();
         setOnline(true);
+        setTabs(m.tabs);
         if (m.rev !== rev) await loadState().catch(() => {});
         return;
       }
+      if (m.tabs) return setTabs(m.tabs);
+      if (m.history) {
+        const h = m.history;
+        if (h.clientId !== clientId && h.entry.source === 'browser' && document.visibilityState === 'visible') toast(`${h.kind === 'undo' ? 'Undid' : 'Redid'} in the browser: ${h.entry.label}`);
+        return;
+      }
+      if (!m.ops) return;
       rev = m.rev;
       if (m.clientId === clientId) return;
       onRemote(m.ops);
@@ -171,103 +198,63 @@
   }
 
   // ---------- commit (local edits + undo) ----------
-  function inverseOf(op) {
-    switch (op.t) {
-      case 'card.put': {
-        const prev = state.cards[op.card.id];
-        if (!prev) return [{ t: 'card.del', id: op.card.id }];
-        const back = { ...prev };
-        for (const k in op.card) if (!(k in prev)) back[k] = null;
-        return [{ t: 'card.put', card: back }];
-      }
-      case 'card.del': {
-        const prev = state.cards[op.id];
-        if (!prev) return [];
-        const ls = Object.values(state.links).filter((l) => l.from === op.id || l.to === op.id);
-        const out = [{ t: 'card.put', card: { ...prev } }, ...ls.map((l) => ({ t: 'link.put', link: { ...l } }))];
-        const b = Object.values(state.boards).find((x) => x.focusId === op.id);
-        if (b) out.push({ t: 'board.put', board: { id: b.id, focusId: op.id } });
-        return out;
-      }
-      case 'link.put': {
-        const prev = state.links[op.link.id];
-        return prev ? [{ t: 'link.put', link: { ...prev } }] : [{ t: 'link.del', id: op.link.id }];
-      }
-      case 'link.del': {
-        const prev = state.links[op.id];
-        return prev ? [{ t: 'link.put', link: { ...prev } }] : [];
-      }
-      case 'board.put': {
-        const prev = state.boards[op.board.id];
-        return prev ? [{ t: 'board.put', board: { ...prev } }] : [{ t: 'board.del', id: op.board.id }];
-      }
-      case 'board.del': {
-        const prev = state.boards[op.id];
-        if (!prev) return [];
-        const cs = Object.values(state.cards).filter((c) => c.boardId === op.id);
-        const ids = new Set(cs.map((c) => c.id));
-        const ls = Object.values(state.links).filter((l) => ids.has(l.from));
-        return [{ t: 'board.put', board: { ...prev } }, ...cs.map((c) => ({ t: 'card.put', card: { ...c } })), ...ls.map((l) => ({ t: 'link.put', link: { ...l } })),
-          { t: 'settings.put', settings: { activeBoardId: state.settings.activeBoardId } }];
-      }
-      case 'settings.put': {
-        const back = {};
-        for (const k in op.settings) back[k] = state.settings[k] ?? null;
-        return [{ t: 'settings.put', settings: back }];
-      }
-    }
-    return [];
+  const titleOf = (id) => { const c = state.cards[id]; return c ? `“${c.title || 'Untitled'}”` : 'a card'; };
+  // A short name for an edit, shown when it is undone from the browser.
+  function describe(ops) {
+    const puts = ops.filter((o) => o.t === 'card.put'), dels = ops.filter((o) => o.t === 'card.del');
+    if (dels.length) return dels.length === 1 ? `Deleted ${titleOf(dels[0].id)}` : `Deleted ${dels.length} cards`;
+    const created = puts.filter((o) => !state.cards[o.card.id] || o.card.createdAt);
+    if (created.length) return created.length === 1 ? `Added “${created[0].card.title || 'a card'}”` : `Added ${created.length} cards`;
+    if (puts.length && puts.every((o) => 'status' in o.card)) return `Marked ${puts.length === 1 ? titleOf(puts[0].card.id) : puts.length + ' cards'} ${STATUS_LABEL[puts[0].card.status].toLowerCase()}`;
+    if (puts.length && puts.every((o) => 'x' in o.card)) return puts.length === 1 ? `Moved ${titleOf(puts[0].card.id)}` : `Moved ${puts.length} cards`;
+    if (puts.length === 1 && 'title' in puts[0].card) return `Renamed to “${puts[0].card.title}”`;
+    if (ops.some((o) => o.t === 'link.put')) return 'Linked cards';
+    if (ops.some((o) => o.t === 'link.del')) return 'Removed a link';
+    if (ops.some((o) => o.t === 'board.del')) return 'Deleted a board';
+    if (ops.some((o) => o.t === 'board.put')) return 'Changed a board';
+    return 'Edit';
   }
 
-  // opts: undo (default true), inverse (precomputed), coalesce (key to merge rapid edits), render (default true)
+  // opts: undo (default true), inverse (precomputed), coalesce (key to merge rapid edits),
+  // sticky (merge into the entry with the same coalesce key however long ago), label, render (default true)
   function commit(ops, opts = {}) {
     ops = ops.filter(Boolean);
     if (!ops.length) return;
-    let inverse = opts.inverse;
-    if (!inverse) {
-      inverse = [];
-      for (const op of ops) { inverse.unshift(...inverseOf(op)); S.applyOp(state, op); }
-    } else {
-      for (const op of ops) S.applyOp(state, op);
-    }
-    send(ops);
-    if (opts.undo !== false) {
-      const last = undoStack[undoStack.length - 1];
-      if (opts.coalesce && last && last.key === opts.coalesce && Date.now() - last.at < 2500) {
-        last.ops.push(...ops); last.inverse.unshift(...inverse); last.at = Date.now();
-      } else {
-        undoStack.push({ ops, inverse, key: opts.coalesce || null, at: Date.now() });
-        if (undoStack.length > 300) undoStack.shift();
-      }
-      redoStack.length = 0;
-    }
+    const label = opts.label || describe(ops);
+    for (const op of ops) S.applyOp(state, op);
+    if (opts.undo === false) send(ops);
+    else sendRecorded({ ops, label, coalesce: opts.coalesce || null, sticky: !!opts.sticky, inverse: opts.inverse || null });
     if (opts.render !== false) renderAll();
   }
 
   function runEntry(ops) {
     const prevBoard = boardId();
     for (const op of ops) S.applyOp(state, op);
-    send(ops);
     for (const id of [...selected]) if (!state.cards[id]) selected.delete(id);
     if (detailsId && !state.cards[detailsId]) closeDetails();
     if (boardId() !== prevBoard) switchedBoard(); else renderAll();
   }
-  function undo() {
+
+  async function historyStep(kind) {
     commitEdit();
-    const e = undoStack.pop();
-    if (!e) return toast('Nothing to undo');
-    runEntry(e.inverse); redoStack.push(e);
+    if (!(await drain())) return toast('Burrow’s service isn’t reachable');
+    let d;
+    try { d = await (await fetch('/api/' + kind, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ clientId }) })).json(); } catch (e) { return toast('Burrow’s service isn’t reachable'); }
+    if (d.empty) return toast(kind === 'undo' ? 'Nothing to undo' : 'Nothing to redo');
+    if (d.rev) rev = d.rev;
+    runEntry(d.ops);
+    if (d.entry.source === 'browser') toast(`${kind === 'undo' ? 'Undid' : 'Redid'}: ${d.entry.label}`);
+    return d;
+  }
+  async function undo() {
+    const d = await historyStep('undo');
     // Undoing a new card puts you back on the card it was added under.
-    if (!selected.size) {
-      const l = e.ops.find((o) => o.t === 'link.put' && !state.cards[o.link.to] && state.cards[o.link.from]);
-      if (l) selectOnly(l.link.from);
+    if (d && d.orig && !selected.size) {
+      const l = d.orig.find((o) => o.t === 'link.put' && !state.cards[o.link.to] && state.cards[o.link.from]);
+      if (l && state.cards[l.link.from].boardId === boardId()) selectOnly(l.link.from);
     }
   }
-  function redo() {
-    const e = redoStack.pop();
-    if (!e) return toast('Nothing to redo');
-    runEntry(e.ops); undoStack.push(e);
-  }
+  function redo() { return historyStep('redo'); }
 
   // ---------- view ----------
   function applyView() {
@@ -371,12 +358,15 @@
     const ready = isReady(c);
     const dot = c.status === 'done' ? icon('check', 'done-check') : `<span class="sdot s-${c.status}"></span>`;
     let meta = '';
-    if (c.url) meta += `<a class="src" href="${esc(c.url)}" target="_blank" rel="noopener" title="${esc(c.url)}">${icon('ext')}${esc(hostOf(c.url))}</a>`;
+    const url = urlOf(c);
+    if (url) meta += `<a class="src" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(url)}">${icon('ext')}${esc(hostOf(url))}</a>`;
+    if (c.urls.length > 1) meta += `<span class="meta-more" title="${c.urls.length} pages read for this card">+${c.urls.length - 1}</span>`;
     if (c.note) meta += `<span class="meta-note" title="Has notes">${icon('note')}</span>`;
     const sibs = siblingsOf(c);
     if (sibs.length) meta += `<span class="meta-shared" title="Also on ${esc(sibs.map((o) => state.boards[o.boardId].name).join(', '))}">${icon('link')}${sibs.length}</span>`;
     if (kids.length) meta += `<span class="meta-kids ${ready ? 'ready-tag' : ''}" title="Prerequisites understood">${ready ? 'Ready · ' : ''}${doneKids}/${kids.length}</span>`;
-    return `<span class="focus-pin">${icon('target')}Capturing</span>` +
+    const tab = openTabs.has(c.id) ? '<span class="tab-dot" title="Open in a browser tab"></span>' : '';
+    return `<span class="focus-pin">${icon('target')}Capturing</span>${tab}` +
       `<div class="card-head">${dot}<div class="card-title">${esc(c.title) || '<span style="color:var(--text-3);font-weight:400">Untitled</span>'}</div></div>` +
       `<div class="card-meta">${meta}</div>` +
       `<div class="handle" title="Drag to a card, or into empty space, to add a prerequisite"></div>`;
@@ -536,7 +526,7 @@
     const card = { id: S.uid('c_'), boardId: boardId(), title, url, note: '', status: 'todo', x: Math.round(x), y: Math.round(y), createdAt: Date.now() };
     const ops = [{ t: 'card.put', card }, ...adoptOps(card)];
     if (parentId) { ops.push({ t: 'link.put', link: { id: S.uid('l_'), boardId: boardId(), from: parentId, to: card.id } }); lastUpFrom.set(card.id, parentId); }
-    commit(ops);
+    commit(ops, { coalesce: 'new:' + card.id });
     const el = cardEls.get(card.id);
     if (el) el.classList.add('enter');
     selectOnly(card.id);
@@ -628,8 +618,8 @@
 
   function openUrl(id) {
     const c = state.cards[id];
-    if (!c || !c.url) return toast('This card has no link');
-    window.open(c.url, '_blank', 'noopener');
+    if (!c || !urlOf(c)) return toast('This card has no link');
+    window.open(urlOf(c), '_blank', 'noopener');
   }
 
   function whatsNext() {
@@ -642,7 +632,7 @@
         const id = stack.pop(); if (seen.has(id)) continue; seen.add(id);
         const c = state.cards[id]; if (!c) continue;
         const ks = kidsOf(id);
-        if (c.status !== 'done' && ks.every((k) => k.status === 'done')) out.push(c);
+        if (c.status !== 'done' && c.status !== 'parked' && ks.every((k) => k.status === 'done')) out.push(c);
         for (const k of ks) stack.push(k.id);
       }
       return out;
@@ -699,33 +689,21 @@
     if (title && title !== c.title) {
       const ops = [{ t: 'card.put', card: { id, boardId: c.boardId, title } }];
       if (isNew && !c.conceptId) ops.push(...adoptOps({ ...c, title }));
-      commit(ops, { coalesce: isNew ? 'new:' + id : null });
+      // Creation + its first title are one undo step.
+      commit(ops, isNew ? { coalesce: 'new:' + id, sticky: true, label: `Added “${title}”` } : {});
     }
     else renderAll();
-    if (isNew) mergeLastTwo('new:' + id);
     els.viewport.focus({ preventScroll: true });
     return true;
   }
 
   // An empty new card that was abandoned leaves no trace (and no undo entry).
   function removeNewCard(id) {
-    const last = undoStack[undoStack.length - 1];
-    if (last && last.ops.some((o) => o.t === 'card.put' && o.card.id === id)) undoStack.pop();
     S.applyOp(state, { t: 'card.del', id });
-    send([{ t: 'card.del', id }]);
+    sendRecorded({ ops: [{ t: 'card.del', id }], absorb: true });
     selected.delete(id);
     renderAll();
     els.viewport.focus({ preventScroll: true });
-  }
-
-  // Creation + its first title become one undo step.
-  function mergeLastTwo(key) {
-    const n = undoStack.length;
-    if (n < 2) return;
-    const a = undoStack[n - 2], b = undoStack[n - 1];
-    if (b.key !== key) return;
-    if (!a.ops.some((o) => o.t === 'card.put' && 'new:' + o.card.id === key)) return;
-    a.ops.push(...b.ops); a.inverse.unshift(...b.inverse); undoStack.pop();
   }
 
   function cancelEdit() {
@@ -979,7 +957,7 @@
       { label: 'Add prerequisite', keys: ['Tab'], run: () => addPrerequisite(id), hidden: many },
       { label: 'Open details', keys: ['E'], run: () => openDetails(id), hidden: many },
       { label: 'Rename', keys: ['F2'], run: () => startEdit(id), hidden: many },
-      { label: 'Open link', keys: ['O'], run: () => openUrl(id), hidden: many || !c.url },
+      { label: 'Open link', keys: ['O'], run: () => openUrl(id), hidden: many || !urlOf(c) },
       { sep: true },
       { label: 'To learn', icon: '<span class="sdot s-todo"></span>', keys: ['1'], run: () => setStatus(ids, 'todo') },
       { label: 'Learning', icon: '<span class="sdot s-doing"></span>', keys: ['2'], run: () => setStatus(ids, 'doing') },
@@ -1212,7 +1190,7 @@
     let anchor = parentId ? spotForChild(state.cards[parentId]) : (() => { const w = toWorld(mouse.x, mouse.y); return freeSpot(w.x - CARD_W / 2, w.y); })();
     for (const line of lines) {
       const isUrl = /^https?:\/\/\S+$/i.test(line);
-      const card = { id: S.uid('c_'), boardId: boardId(), title: isUrl ? hostOf(line) : line, url: isUrl ? line : '', note: '', status: 'todo', x: Math.round(anchor.x), y: Math.round(anchor.y), createdAt: Date.now() };
+      const card = { id: S.uid('c_'), boardId: boardId(), title: isUrl ? hostOf(line) : line, urls: isUrl ? [{ url: line, title: '', visitedAt: Date.now() }] : [], note: '', status: 'todo', x: Math.round(anchor.x), y: Math.round(anchor.y), createdAt: Date.now() };
       ops.push({ t: 'card.put', card }, ...adoptOps(card));
       if (parentId) ops.push({ t: 'link.put', link: { id: S.uid('l_'), boardId: boardId(), from: parentId, to: card.id } });
       created.push(card);
@@ -1223,16 +1201,16 @@
     if (created.length === 1) { selectOnly(created[0].id); ensureVisible(created[0].id); }
     else toast(`Added ${created.length} cards`, { action: { label: 'Undo', run: undo } });
     for (const c of created) {
-      if (!c.url) continue;
+      if (!urlOf(c)) continue;
       try {
-        const r = await fetch('/api/title?url=' + encodeURIComponent(c.url)); const d = await r.json();
+        const r = await fetch('/api/title?url=' + encodeURIComponent(urlOf(c))); const d = await r.json();
         if (d.title && state.cards[c.id] && state.cards[c.id].title === c.title) commit([{ t: 'card.put', card: { id: c.id, boardId: c.boardId, title: d.title } }], { undo: false });
       } catch (err) { /* keep hostname */ }
     }
   });
 
   // ---------- details panel ----------
-  const dEls = { panel: $('#details'), title: $('#dTitle'), url: $('#dUrl'), note: $('#dNote'), rel: $('#dRel'), seg: $('#statusSeg') };
+  const dEls = { panel: $('#details'), title: $('#dTitle'), url: $('#dUrl'), sources: $('#dSources'), note: $('#dNote'), rel: $('#dRel'), seg: $('#statusSeg') };
   function openDetails(id) {
     if (!state.cards[id]) return;
     detailsId = id;
@@ -1245,7 +1223,11 @@
     if (!c) return closeDetails();
     const act = document.activeElement;
     if (force || act !== dEls.title) { dEls.title.value = c.title || ''; autosize(dEls.title); }
-    if (force || act !== dEls.url) dEls.url.value = c.url || '';
+    if (force || act !== dEls.url) dEls.url.value = urlOf(c);
+    const more = c.urls.slice(1);
+    dEls.sources.innerHTML = more.map((u, i) => `<li><a href="${esc(u.url)}" target="_blank" rel="noopener" title="${esc(u.url)}">${esc(u.title || hostOf(u.url))}</a>` +
+      `<span class="src-host">${esc(hostOf(u.url))}</span><button class="icon-btn" data-drop="${i + 1}" title="Remove this page">${icon('x')}</button></li>`).join('');
+    dEls.sources.hidden = !more.length;
     if (force || act !== dEls.note) dEls.note.value = c.note || '';
     for (const b of dEls.seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.status === c.status);
     const row = (x) => `<li><button data-id="${x.id}"><span class="sdot s-${x.status}"></span>${esc(x.title || 'Untitled')}</button></li>`;
@@ -1260,7 +1242,16 @@
   };
   dEls.title.addEventListener('input', () => { autosize(dEls.title); patchDetails('title', dEls.title.value.replace(/\s+/g, ' '), 'title:' + detailsId); });
   dEls.title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); dEls.note.focus(); } });
-  dEls.url.addEventListener('change', () => patchDetails('url', dEls.url.value.trim(), 'url:' + detailsId));
+  // The field edits the primary source; the other pages read for the card are listed under it.
+  dEls.url.addEventListener('change', () => {
+    const c = state.cards[detailsId]; if (!c) return;
+    const v = dEls.url.value.trim(); const rest = c.urls.slice(1).filter((u) => u.url !== v);
+    patchDetails('urls', v ? [{ ...(c.urls[0] || {}), url: v, visitedAt: (c.urls[0] && c.urls[0].visitedAt) || Date.now() }, ...rest] : rest, 'url:' + detailsId);
+  });
+  dEls.sources.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-drop]'); const c = state.cards[detailsId]; if (!b || !c) return;
+    patchDetails('urls', c.urls.filter((u, i) => i !== +b.dataset.drop), null);
+  });
   dEls.note.addEventListener('input', () => patchDetails('note', dEls.note.value, 'note:' + detailsId));
   dEls.seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && detailsId) setStatus([detailsId], b.dataset.status); });
   dEls.rel.addEventListener('click', (e) => { const j = e.target.closest('button[data-jump]'); if (j) return jumpToCard(j.dataset.jump); const b = e.target.closest('button[data-id]'); if (b) { selectOnly(b.dataset.id); openDetails(b.dataset.id); centerOn(b.dataset.id); } });
@@ -1281,7 +1272,7 @@
       { label: 'Understood, go back up', keys: ['⇧', 'D'], run: doneAndUp, when: !!c },
       { label: 'What should I learn next?', keys: ['W'], run: whatsNext },
       { label: 'Open details', keys: ['E'], run: () => openDetails(p), when: !!c },
-      { label: 'Open card link', keys: ['O'], run: () => openUrl(p), when: !!(c && c.url) },
+      { label: 'Open card link', keys: ['O'], run: () => openUrl(p), when: !!(c && urlOf(c)) },
       { label: selected.size === 1 ? 'Tidy this branch' : 'Tidy layout', keys: ['T'], run: () => tidy(selected.size === 1 ? p : undefined) },
       { label: 'Detach from other boards', sub: 'make this card its own concept', run: detachConcept, when: !!(c && siblingsOf(c).length) },
       { label: 'Link repeated concepts across boards', run: mergeRepeated },
@@ -1489,8 +1480,8 @@
     const seen = new Set(); const lines = [`# ${board().name}`, ''];
     const walk = (c, d) => {
       const box = c.status === 'done' ? '[x]' : '[ ]';
-      const t = c.url ? `[${c.title}](${c.url})` : c.title;
-      lines.push(`${'  '.repeat(d)}- ${box} ${t}${c.status === 'doing' ? ' (learning)' : ''}${seen.has(c.id) ? ' ↺' : ''}`);
+      const t = urlOf(c) ? `[${c.title}](${urlOf(c)})` : c.title;
+      lines.push(`${'  '.repeat(d)}- ${box} ${t}${c.status === 'doing' ? ' (learning)' : c.status === 'parked' ? ' (parked)' : ''}${seen.has(c.id) ? ' ↺' : ''}`);
       if (seen.has(c.id)) return; seen.add(c.id);
       for (const k of kidsOf(c.id)) walk(k, d + 1);
     };
