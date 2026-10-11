@@ -148,6 +148,8 @@ kbd {
 .src:hover { color: var(--accent); }
 .src svg { width: 12px; height: 12px; flex: none; }
 .meta-note svg { width: 13px; height: 13px; }
+.meta-shared { display: inline-flex; align-items: center; gap: 3px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.meta-shared svg { width: 12px; height: 12px; }
 .meta-kids { margin-left: auto; font-variant-numeric: tabular-nums; }
 .ready-tag { color: var(--accent); font-weight: 600; }
 

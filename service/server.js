@@ -164,9 +164,12 @@ async function capture({ url, title, note, boardId }) {
     note: note ? String(note).slice(0, 4000) : '', status: 'todo', x, y, createdAt: Date.now(), source: 'capture',
   };
   ops.push({ t: 'card.put', card });
+  // The same concept on another board: share it, so what is understood there is understood here.
+  const known = shared.findConcept(state, card, bId);
+  if (known) ops.push(...shared.joinOps(known, card));
   if (parent) ops.push({ t: 'link.put', link: { id: shared.uid('l_'), boardId: bId, from: parent.id, to: card.id } });
   applyOps(ops, 'capture');
-  return { card, parent, existing: false, board };
+  return { card: state.cards[card.id] || card, parent, existing: false, board, known: known ? state.boards[known.boardId].name : null };
 }
 
 // ---------- http ----------

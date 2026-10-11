@@ -74,6 +74,8 @@ Statuses: **to learn** (blue), **learning** (yellow), **understood** (grey).
 | `Ctrl+Alt+B` (anywhere) | Bring up the desktop app and add a prerequisite to the current card |
 | `?` | All shortcuts |
 
+A topic you add on a new board that you already have on another one is linked to it, so a course board starts out showing what you already understand. Marking it understood, renaming it or editing its notes updates every board it is on. Use `Ctrl+K` → “Link repeated concepts across boards” to link cards you made before this existed, or “Detach from other boards” if two cards only share a name.
+
 Change the accent color with the dot in the top-right corner. Rename a board by double-clicking its name.
 
 ## Installing the Zen extension

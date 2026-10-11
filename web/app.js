@@ -42,6 +42,7 @@
   const boardId = () => state.settings.activeBoardId;
   const board = () => state.boards[boardId()];
   const cardsOn = (bid = boardId()) => Object.values(state.cards).filter((c) => c.boardId === bid);
+  const siblingsOf = (c) => S.conceptCards(state, c.conceptId).filter((o) => o.id !== c.id);
   const linksOn = (bid = boardId()) => Object.values(state.links).filter((l) => state.cards[l.from] && state.cards[l.from].boardId === bid);
   const sizeOf = (id) => sizes.get(id) || { w: CARD_W, h: 46 };
   const kidsOf = (id) => (graph.kids.get(id) || []).map((cid) => state.cards[cid]).filter(Boolean).sort((a, b) => a.x - b.x);
@@ -372,6 +373,8 @@
     let meta = '';
     if (c.url) meta += `<a class="src" href="${esc(c.url)}" target="_blank" rel="noopener" title="${esc(c.url)}">${icon('ext')}${esc(hostOf(c.url))}</a>`;
     if (c.note) meta += `<span class="meta-note" title="Has notes">${icon('note')}</span>`;
+    const sibs = siblingsOf(c);
+    if (sibs.length) meta += `<span class="meta-shared" title="Also on ${esc(sibs.map((o) => state.boards[o.boardId].name).join(', '))}">${icon('link')}${sibs.length}</span>`;
     if (kids.length) meta += `<span class="meta-kids ${ready ? 'ready-tag' : ''}" title="Prerequisites understood">${ready ? 'Ready · ' : ''}${doneKids}/${kids.length}</span>`;
     return `<span class="focus-pin">${icon('target')}Capturing</span>` +
       `<div class="card-head">${dot}<div class="card-title">${esc(c.title) || '<span style="color:var(--text-3);font-weight:400">Untitled</span>'}</div></div>` +
@@ -454,7 +457,9 @@
     els.boardName.textContent = b ? b.name : 'No board';
     const cs = cardsOn();
     const done = cs.filter((c) => c.status === 'done').length;
-    els.progressText.textContent = cs.length ? `${done} of ${cs.length} understood` : 'No cards yet';
+    const shared = cs.filter((c) => c.status === 'done' && c.conceptId && siblingsOf(c).length).length;
+    els.progressText.textContent = cs.length ? `${done} of ${cs.length} understood${shared ? ` · ${shared} shared` : ''}` : 'No cards yet';
+    els.progressText.title = shared ? `${shared} understood concepts also live on other boards` : '';
     els.progressFill.style.width = cs.length ? (done / cs.length) * 100 + '%' : '0';
     const f = b && b.focusId && state.cards[b.focusId];
     els.focusChip.classList.toggle('none', !f);
@@ -517,10 +522,19 @@
     return freeSpot(parent.x, parent.y + sizeOf(parent.id).h + GAP_Y);
   }
 
+  // A new card that repeats a concept from another board shares it and starts with what you already know.
+  function adoptOps(card) {
+    const known = card.title ? S.findConcept(state, card, card.boardId) : null;
+    if (!known) return [];
+    const where = state.boards[known.boardId].name;
+    setTimeout(() => toast(known.status === 'done' ? `“${known.title}” is already understood (from ${where})` : `Linked “${known.title}” with ${where}${known.status === 'doing' ? ', already learning' : ''}`), 0);
+    return S.joinOps(known, card);
+  }
+
   function createCard({ x, y, title = '', url = '', parentId = null, editNow = true }) {
     if (!board()) return;
     const card = { id: S.uid('c_'), boardId: boardId(), title, url, note: '', status: 'todo', x: Math.round(x), y: Math.round(y), createdAt: Date.now() };
-    const ops = [{ t: 'card.put', card }];
+    const ops = [{ t: 'card.put', card }, ...adoptOps(card)];
     if (parentId) { ops.push({ t: 'link.put', link: { id: S.uid('l_'), boardId: boardId(), from: parentId, to: card.id } }); lastUpFrom.set(card.id, parentId); }
     commit(ops);
     const el = cardEls.get(card.id);
@@ -682,7 +696,11 @@
     const title = ta.value.replace(/\s+/g, ' ').trim();
     if (!title && isNew) { removeNewCard(id); return false; }
     const el = cardEls.get(id); if (el) el._html = null;
-    if (title && title !== c.title) commit([{ t: 'card.put', card: { id, boardId: c.boardId, title } }], { coalesce: isNew ? 'new:' + id : null });
+    if (title && title !== c.title) {
+      const ops = [{ t: 'card.put', card: { id, boardId: c.boardId, title } }];
+      if (isNew && !c.conceptId) ops.push(...adoptOps({ ...c, title }));
+      commit(ops, { coalesce: isNew ? 'new:' + id : null });
+    }
     else renderAll();
     if (isNew) mergeLastTwo('new:' + id);
     els.viewport.focus({ preventScroll: true });
@@ -929,6 +947,8 @@
       { label: 'New card here', keys: ['N'], run: () => newCardAt(e.clientX, e.clientY) },
       { sep: true },
       { label: 'Tidy layout', keys: ['T'], run: () => tidy() },
+      { label: 'Detach from other boards', sub: 'make this card its own concept', run: detachConcept, when: !!(c && siblingsOf(c).length) },
+      { label: 'Link repeated concepts across boards', run: mergeRepeated },
       { label: 'Fit board', keys: ['F'], run: () => fitBoard() },
       { label: 'What should I learn next?', keys: ['W'], run: whatsNext },
     ]);
@@ -1195,7 +1215,7 @@
     for (const line of lines) {
       const isUrl = /^https?:\/\/\S+$/i.test(line);
       const card = { id: S.uid('c_'), boardId: boardId(), title: isUrl ? hostOf(line) : line, url: isUrl ? line : '', note: '', status: 'todo', x: Math.round(anchor.x), y: Math.round(anchor.y), createdAt: Date.now() };
-      ops.push({ t: 'card.put', card });
+      ops.push({ t: 'card.put', card }, ...adoptOps(card));
       if (parentId) ops.push({ t: 'link.put', link: { id: S.uid('l_'), boardId: boardId(), from: parentId, to: card.id } });
       created.push(card);
       anchor = { x: anchor.x + CARD_W + GAP_X, y: anchor.y };
@@ -1232,7 +1252,9 @@
     for (const b of dEls.seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.status === c.status);
     const row = (x) => `<li><button data-id="${x.id}"><span class="sdot s-${x.status}"></span>${esc(x.title || 'Untitled')}</button></li>`;
     const ks = kidsOf(c.id), ps = parsOf(c.id);
-    dEls.rel.innerHTML = (ks.length ? `<h3>Needs first</h3><ul>${ks.map(row).join('')}</ul>` : '') + (ps.length ? `<h3>Needed for</h3><ul>${ps.map(row).join('')}</ul>` : '');
+    const sibs = siblingsOf(c).sort((a, z) => state.boards[a.boardId].createdAt - state.boards[z.boardId].createdAt);
+    const also = sibs.map((o) => `<li><button data-jump="${o.id}"><span class="sdot s-${o.status}"></span>${esc(state.boards[o.boardId].name)}</button></li>`).join('');
+    dEls.rel.innerHTML = (sibs.length ? `<h3>Also on</h3><ul>${also}</ul>` : '') + (ks.length ? `<h3>Needs first</h3><ul>${ks.map(row).join('')}</ul>` : '') + (ps.length ? `<h3>Needed for</h3><ul>${ps.map(row).join('')}</ul>` : '');
   }
   const patchDetails = (field, value, key) => {
     const c = state.cards[detailsId]; if (!c || c[field] === value) return;
@@ -1243,7 +1265,7 @@
   dEls.url.addEventListener('change', () => patchDetails('url', dEls.url.value.trim(), 'url:' + detailsId));
   dEls.note.addEventListener('input', () => patchDetails('note', dEls.note.value, 'note:' + detailsId));
   dEls.seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && detailsId) setStatus([detailsId], b.dataset.status); });
-  dEls.rel.addEventListener('click', (e) => { const b = e.target.closest('button[data-id]'); if (b) { selectOnly(b.dataset.id); openDetails(b.dataset.id); centerOn(b.dataset.id); } });
+  dEls.rel.addEventListener('click', (e) => { const j = e.target.closest('button[data-jump]'); if (j) return jumpToCard(j.dataset.jump); const b = e.target.closest('button[data-id]'); if (b) { selectOnly(b.dataset.id); openDetails(b.dataset.id); centerOn(b.dataset.id); } });
   $('#detailsClose').addEventListener('click', closeDetails);
   $('#dOpen').addEventListener('click', () => detailsId && openUrl(detailsId));
 
@@ -1315,7 +1337,7 @@
         const cs = Object.values(state.cards).map((c) => ({ c, s: score(c.title, q) + (c.boardId === here ? 5 : 0) })).filter((x) => x.s > 5)
           .sort((a, z) => z.s - a.s).slice(0, 8)
           .map(({ c }) => ({ kind: 'card', label: c.title || 'Untitled', html: highlight(c.title || 'Untitled', q), icon: statusIcon(c.status),
-            sub: c.boardId !== here ? state.boards[c.boardId].name : STATUS_LABEL[c.status], run: () => jumpToCard(c.id) }));
+            sub: c.boardId !== here ? `${state.boards[c.boardId].name} · ${STATUS_LABEL[c.status]}` : STATUS_LABEL[c.status], run: () => jumpToCard(c.id) }));
         const p = primary();
         cs.push({ kind: 'create', label: p ? `Add “${raw}” as a prerequisite` : `Create card “${raw}”`, icon: icon('plus'),
           sub: p ? `under “${state.cards[p].title}”` : '', run: () => createFromPalette(raw) });
@@ -1348,7 +1370,8 @@
 
   function boardItem(b, q) {
     const cs = cardsOn(b.id); const done = cs.filter((c) => c.status === 'done').length;
-    return { kind: 'board', boardId: b.id, label: b.name, html: highlight(b.name, q), icon: icon('board'), sub: `${done} of ${cs.length} understood${b.id === boardId() ? ', current' : ''}`, run: () => switchBoard(b.id) };
+    const shared = cs.filter((c) => c.status === 'done' && siblingsOf(c).length).length;
+    return { kind: 'board', boardId: b.id, label: b.name, html: highlight(b.name, q), icon: icon('board'), sub: `${done} of ${cs.length} understood${shared ? ` (${shared} shared)` : ''}${b.id === boardId() ? ', current' : ''}`, run: () => switchBoard(b.id) };
   }
 
   function paintActive() {
@@ -1391,6 +1414,20 @@
     const c = state.cards[id]; if (!c) return;
     if (c.boardId !== boardId()) { switchBoard(c.boardId, () => { selectOnly(id); centerOn(id); }); return; }
     selectOnly(id); centerOn(id);
+  }
+
+  function detachConcept() {
+    const ids = [...selected].filter((id) => state.cards[id] && state.cards[id].conceptId);
+    if (!ids.length) return;
+    commit(ids.map((id) => ({ t: 'card.put', card: { id, boardId: state.cards[id].boardId, conceptId: null } })));
+    toast('Detached from other boards', { action: { label: 'Undo', keys: ['Ctrl', 'Z'], run: undo } });
+  }
+
+  function mergeRepeated() {
+    const m = S.mergeRepeatedOps(state);
+    if (!m.ops.length) return toast('No repeated concepts to link');
+    commit(m.ops);
+    toast(`Linked ${m.cards} cards into ${m.concepts} shared concept${m.concepts === 1 ? '' : 's'}`, { action: { label: 'Undo', keys: ['Ctrl', 'Z'], run: undo } });
   }
 
   function createFromPalette(title) {

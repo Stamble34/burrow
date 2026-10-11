@@ -20,6 +20,7 @@ Personal learning-map app: cards for topics, links mean "needs this first", stat
   - `link.put` / `link.del`
   - `board.put` / `board.del`
   - `settings.put`
+  - Concepts: cards that share a `conceptId` are the same concept on different boards. `title`, `url`, `note`, `status` and `doneAt` are kept in sync by `applyOp` (position and links stay per board). A card that joins a concept takes on the siblings' fields. New cards and captures join automatically when another board has the same title or URL (`findConcept`); the palette has "Link repeated concepts across boards" for older data and "Detach from other boards" as the escape hatch for false matches.
   - A link `{from, to}` means `from` needs `to` first; `to` is drawn below.
 - `web/app.js`: the whole UI as one vanilla-JS file with no build step. Sections are marked `// ---------- name ----------`.
   - Cards are DOM elements inside `#world`, which is moved and scaled with a CSS transform. Links are drawn in an SVG layer.
