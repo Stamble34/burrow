@@ -13,10 +13,11 @@ The browser extension is the main interface: the user lives in Zen, and the app/
   - It serves `web/`.
   - API:
     - `GET /api/state`
-    - `GET /api/events?clientId=` (Server-Sent Events: `{rev, clientId, ops}`, `{tabs}`, `{history: {kind, entry, clientId}}`)
+    - `GET /api/events?clientId=` (Server-Sent Events: `{rev, clientId, ops}`, `{tabs, browser}`, `{history: {kind, entry, clientId}}`, `{open: {url, cardId}}`)
     - `POST /api/ops` (not undoable), `POST /api/do` (undoable: `{ops, label, coalesce, sticky, inverse?, effects?}`; `absorb` drops the entry that created an abandoned new card)
     - `POST /api/undo`, `POST /api/redo`, `GET /api/history`
     - `POST /api/capture` (add a page: under `parentId`, next to it with `sibling`, or under the capture target; records history with `effects`)
+    - `POST /api/open` (the app opens a link through the extension, which reuses an open tab; `routed: false` when the extension isn't connected, and the app opens a tab itself)
     - `POST /api/preview` (what the confirm prompt says), `POST /api/source` (add a source to a card), `POST /api/crumbs` (breadcrumb trails), `POST /api/match` (cards for URLs, after a browser restart), `GET|POST /api/tabs`
     - `GET /api/title?url=` (fetches a page title)
     - `GET /capture` (bookmarklet page)
@@ -36,7 +37,7 @@ The browser extension is the main interface: the user lives in Zen, and the app/
   - Edits from other windows arrive over SSE and go through `onRemote()`.
   - `board.focusId` is the capture target and follows the selected card.
 - `web/app.css`: design tokens are on `:root`. Status colors are `--todo`, `--doing` and `--done`. `--accent` comes from `settings.accent`.
-- `desktop/`: Electron shell with a frameless window. It loads the service URL and starts the service if it isn't running. The preload exposes `window.burrowDesktop` (window controls and the `Ctrl+Alt+B` quick add).
+- `desktop/`: Electron shell with a frameless window. It loads the service URL and starts the service if it isn't running. The preload exposes `window.burrowDesktop` (window controls, the `Ctrl+Alt+B` quick add, and `raiseBrowser()`, which runs `wmctrl -x -a Navigator.zen` because Cinnamon won't let Zen raise itself while Burrow has focus).
 - `extension/`: Firefox MV2 extension for Zen. It needs Mozilla signing (unlisted) to stay installed; see README. Bump `version` in its manifest whenever it changes.
   - `background.js`: tab→card bindings (`S.bindings`, `S.pending` for tabs opened from a bound tab, `S.asked`), persisted in `storage.local` and on each tab with `sessions.setTabValue`; rebuilt by `rebind()` on browser start (tab value first, then URL match). One SSE connection to the service; breadcrumb views go to pages over ports. Shortcuts arrive both from `commands` and from content.js (which beats site accesskeys); `runCommand` drops the duplicate.
   - `content.js`: breadcrumb pill, confirm prompt and toasts in one closed Shadow DOM. It never talks to 127.0.0.1 itself.

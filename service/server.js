@@ -177,7 +177,7 @@ let tabsOwner = null;
 function setTabs(list, clientId) {
   openTabs = (Array.isArray(list) ? list : []).filter((t) => t && state.cards[t.cardId]).map((t) => ({ tabId: t.tabId, cardId: t.cardId, active: !!t.active }));
   tabsOwner = clientId || null;
-  broadcast({ tabs: openTabs });
+  broadcast({ tabs: openTabs, browser: !!tabsOwner });
 }
 
 // ---------- page titles ----------
@@ -408,7 +408,7 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/events' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', ...cors });
-      res.write(`retry: 1500\ndata: ${JSON.stringify({ hello: true, rev, tabs: openTabs })}\n\n`);
+      res.write(`retry: 1500\ndata: ${JSON.stringify({ hello: true, rev, tabs: openTabs, browser: !!tabsOwner })}\n\n`);
       streams.add(res);
       const who = u.searchParams.get('clientId');
       req.on('close', () => {
@@ -437,6 +437,14 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/history' && req.method === 'GET') {
       const top = (a) => (a.length ? entrySummary(a[a.length - 1]) : null);
       return send(res, 200, { ok: true, undo: top(history.done), redo: top(history.undone) }, cors);
+    }
+
+    // The app opens links through the extension when it's connected, so an already open page is reused.
+    if (p === '/api/open' && req.method === 'POST') {
+      const body = await readBody(req);
+      const ok = !!tabsOwner && /^(https?|file):/i.test(body.url || '');
+      if (ok) broadcast({ open: { url: body.url, cardId: body.cardId || null } });
+      return send(res, 200, { ok: true, routed: ok }, cors);
     }
 
     if (p === '/api/tabs') {

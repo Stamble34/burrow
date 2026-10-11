@@ -95,6 +95,7 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
   - On pages where extensions can't draw (PDFs, `about:` pages, addons.mozilla.org), the toolbar icon shows the depth instead, and the prompt opens as a small window.
 - **Undo anything.** `Alt+Shift+Z` undoes the last Burrow change, and `Alt+Shift+Y` redoes it. The app and the browser share one history, so `Ctrl+Z` in the app undoes a page added in the browser and vice versa. Undoing an add also unbinds the tab.
 - After a browser restart, tabs find their cards again.
+- Clicking a card's link in the app switches to the tab that already shows that page, instead of opening another one. If it isn't open, it opens in a new tab tied to the card, and Zen comes to the front. Without the extension, links open in a new tab as before.
 
 | Browser shortcut | |
 |---|---|

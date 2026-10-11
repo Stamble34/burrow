@@ -6,7 +6,7 @@ const { app, BrowserWindow, ipcMain, shell, globalShortcut, Menu } = require('el
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 
 const PORT = Number(process.env.BURROW_PORT || 7417);
 const URL_BASE = `http://127.0.0.1:${PORT}`;
@@ -103,6 +103,12 @@ ipcMain.on('win', (e, action) => {
   if (action === 'minimize') w.minimize();
   if (action === 'maximize') w.isMaximized() ? w.unmaximize() : w.maximize();
   if (action === 'close') w.close();
+});
+
+// The extension switched to a link's tab in Zen; bring Zen forward too. Cinnamon won't let the
+// browser raise itself while this window has focus, but honours a request through wmctrl.
+ipcMain.on('raise-browser', () => {
+  execFile('wmctrl', ['-x', '-a', 'Navigator.zen'], () => {});
 });
 
 function showAndQuickAdd() {

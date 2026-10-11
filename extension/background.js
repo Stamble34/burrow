@@ -34,6 +34,7 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.hello) { online = true; pushTabs(); refresh(); return; }
     if (m.history) return onHistory(m.history);
+    if (m.open) return openFromApp(m.open);
     if (m.ops) refresh();
   };
   es.onerror = () => { online = false; };
@@ -305,6 +306,23 @@ async function goTo(cardId, fromTabId) {
   if (!c || !c.url) return toast(fromTabId, `“${c ? c.title : 'That card'}” has no page yet`);
   const tab = await browser.tabs.create({ url: c.url, openerTabId: fromTabId });
   bind(tab.id, cardId, c.url);
+}
+
+// A link clicked in the app: switch to a tab already showing that page (the card's own tab first),
+// otherwise open it in a new tab bound to the card.
+async function openFromApp({ url, cardId }) {
+  const tabs = await browser.tabs.query({});
+  const same = tabs.filter((t) => sameUrl(t.url, url));
+  const hit = same.find((t) => S.bindings[t.id] && S.bindings[t.id].cardId === cardId) || same[0];
+  if (hit) {
+    await browser.tabs.update(hit.id, { active: true });
+    await browser.windows.update(hit.windowId, { focused: true }).catch(() => {});
+    return;
+  }
+  const win = await browser.windows.getLastFocused({ windowTypes: ['normal'] }).catch(() => null);
+  const tab = await browser.tabs.create({ url, windowId: win ? win.id : undefined });
+  browser.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  if (cardId) bind(tab.id, cardId, url);
 }
 
 // ---------- commands ----------

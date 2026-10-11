@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Burrow",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Remembers the path out of a rabbit hole: tabs you open from a page become prerequisites of it in Burrow, with a breadcrumb on every page.",
   "icons": {
     "16": "icons/icon-16.png",

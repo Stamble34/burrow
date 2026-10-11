@@ -100,6 +100,7 @@
   // history (the browser extension undoes from the same list); the rest go to /api/ops.
   let outbox = [], flushing = false, online = false;
   let openTabs = new Set(); // card ids showing in a browser tab
+  let browserLinked = false; // the extension is connected, so links can reuse open tabs
 
   function send(ops) {
     if (!ops.length) return;
@@ -150,7 +151,8 @@
     if (first) { restoreView(true); suggestRepeats(); }
   }
 
-  function setTabs(list) {
+  function setTabs(list, browser) {
+    browserLinked = !!browser;
     openTabs = new Set((list || []).map((t) => t.cardId));
     if (loaded) syncCards();
   }
@@ -162,11 +164,11 @@
       if (m.hello) {
         if (outbox.length) await flush();
         setOnline(true);
-        setTabs(m.tabs);
+        setTabs(m.tabs, m.browser);
         if (m.rev !== rev) await loadState().catch(() => {});
         return;
       }
-      if (m.tabs) return setTabs(m.tabs);
+      if (m.tabs) return setTabs(m.tabs, m.browser);
       if (m.history) {
         const h = m.history;
         if (h.clientId !== clientId && h.entry.source === 'browser' && document.visibilityState === 'visible') toast(`${h.kind === 'undo' ? 'Undid' : 'Redid'} in the browser: ${h.entry.label}`);
@@ -619,8 +621,28 @@
   function openUrl(id) {
     const c = state.cards[id];
     if (!c || !urlOf(c)) return toast('This card has no link');
-    window.open(urlOf(c), '_blank', 'noopener');
+    openLink(urlOf(c), id);
   }
+
+  // With the extension connected, the browser switches to a tab already showing the page instead of
+  // opening another. Without it, open a new tab as usual (synchronously, so it isn't popup-blocked).
+  function openLink(url, cardId) {
+    if (!browserLinked) return window.open(url, '_blank', 'noopener');
+    fetch('/api/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url, cardId }) })
+      .then((r) => r.json()).then((d) => {
+        if (!d.routed) return window.open(url, '_blank', 'noopener');
+        if (desktop && desktop.raiseBrowser) desktop.raiseBrowser();
+      })
+      .catch(() => window.open(url, '_blank', 'noopener'));
+  }
+  // Card and details links go through openLink too (plain clicks only; modifier clicks keep their default).
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('a.src, #dSources a');
+    if (!a || e.button !== 0 || e.ctrlKey || e.shiftKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    const card = a.closest('.card');
+    openLink(a.href, card ? card.dataset.id : detailsId);
+  });
 
   function whatsNext() {
     const anchor = trailAnchor();
