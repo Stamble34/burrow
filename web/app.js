@@ -133,7 +133,7 @@
     for (const id of [...selected]) if (!state.cards[id]) selected.delete(id);
     applyAccent();
     renderAll();
-    if (first) restoreView(true);
+    if (first) { restoreView(true); suggestRepeats(); }
   }
 
   function connect() {
@@ -947,8 +947,6 @@
       { label: 'New card here', keys: ['N'], run: () => newCardAt(e.clientX, e.clientY) },
       { sep: true },
       { label: 'Tidy layout', keys: ['T'], run: () => tidy() },
-      { label: 'Detach from other boards', sub: 'make this card its own concept', run: detachConcept, when: !!(c && siblingsOf(c).length) },
-      { label: 'Link repeated concepts across boards', run: mergeRepeated },
       { label: 'Fit board', keys: ['F'], run: () => fitBoard() },
       { label: 'What should I learn next?', keys: ['W'], run: whatsNext },
     ]);
@@ -1285,6 +1283,8 @@
       { label: 'Open details', keys: ['E'], run: () => openDetails(p), when: !!c },
       { label: 'Open card link', keys: ['O'], run: () => openUrl(p), when: !!(c && c.url) },
       { label: selected.size === 1 ? 'Tidy this branch' : 'Tidy layout', keys: ['T'], run: () => tidy(selected.size === 1 ? p : undefined) },
+      { label: 'Detach from other boards', sub: 'make this card its own concept', run: detachConcept, when: !!(c && siblingsOf(c).length) },
+      { label: 'Link repeated concepts across boards', run: mergeRepeated },
       { label: 'Fit board', keys: ['F'], run: () => fitBoard() },
       { label: 'Switch board', keys: ['Ctrl', 'B'], run: () => setTimeout(() => openPalette('boards'), 0) },
       { label: 'New board', run: () => setTimeout(() => openPalette('newboard'), 0) },
@@ -1430,6 +1430,17 @@
     toast(`Linked ${m.cards} cards into ${m.concepts} shared concept${m.concepts === 1 ? '' : 's'}`, { action: { label: 'Undo', keys: ['Ctrl', 'Z'], run: undo } });
   }
 
+  // Cards made before concepts existed don't link by themselves; offer it once per set of repeats.
+  function suggestRepeats() {
+    const bid = boardId();
+    const ids = S.mergeRepeatedOps(state).ops.filter((o) => 'conceptId' in o.card && o.card.boardId === bid).map((o) => o.card.id).sort();
+    if (!ids.length) return;
+    const key = 'burrow.repeats.' + bid;
+    if (lsGet(key) === ids.join()) return;
+    lsSet(key, ids.join());
+    toast(`${ids.length === 1 ? '1 topic here is' : ids.length + ' topics here are'} also on other boards`, { action: { label: 'Link them', run: mergeRepeated }, ms: 9000 });
+  }
+
   function createFromPalette(title) {
     const p = primary();
     if (p && state.cards[p]) { const s = spotForChild(state.cards[p]); createCard({ ...s, title, parentId: p, editNow: false }); }
@@ -1447,6 +1458,7 @@
     selected = new Set(); selectedLink = null; closeDetails(); endLinkMode();
     renderAll();
     restoreView(true);
+    suggestRepeats();
   }
   function newBoard(name) {
     const b = { id: S.uid('b_'), name: name.trim().slice(0, 80) || 'Untitled board', createdAt: Date.now(), focusId: null };
