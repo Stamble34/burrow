@@ -94,6 +94,11 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
 - **Read around.** Following links inside a bound tab adds those pages as extra sources of the same card (search result pages don't count). It never makes new cards.
 - **The breadcrumb** at the bottom left of every page shows the trail from the top card down to this tab: *BFS / Queue / Linked lists / Doubly linked list · 4 deep*. Click a step to switch to its tab, or to reopen its page (a card with no page yet reopens its search). On a tab that isn't on the map it shows where a capture would go. It hides in fullscreen.
   - Hover it on a page you dove into to see where it came from: *From Queues: “A circular buffer is a fixed-size queue that wraps around at the end.”* Click that line to go back to that sentence.
+- **Climb back out.** When a page makes sense, press `Alt+Shift+D`. The card is marked understood, its tab closes (the page stays on the card), and Burrow takes you to the next prerequisite of the same card that you haven't finished, or back up to the card itself when there are none left. If that card's tab is closed, its page reopens where you left off (or its search, if it has no page yet). When everything a card needs is understood, the toast says so.
+  - `Alt+Shift+P` parks a card (set aside for now, shown dashed), closes its tab and goes up.
+  - `Alt+Shift+U` just goes up to the card that needs this one, without changing anything.
+  - `Alt+Shift+X` says a page was a wrong turn: the card it made is removed and the tab stays open. A tab that was only matched to an existing card lets go of it instead.
+  - All of these are in the page's right-click menu too, and `Alt+Shift+Z` undoes them, reopening a closed tab.
 - **Pick up where you were.** Leaving a bound tab remembers how far down you'd read. When the page is reopened later (from the breadcrumb or the app), it scrolls back there.
   - On pages where extensions can't draw (PDFs, `about:` pages, addons.mozilla.org), the toolbar icon shows the depth instead, and the prompt opens as a small window.
 - **Undo anything.** `Alt+Shift+Z` undoes the last Burrow change, and `Alt+Shift+Y` redoes it. The app and the browser share one history, so `Ctrl+Z` in the app undoes a page added in the browser and vice versa. Undoing an add also unbinds the tab.
@@ -104,6 +109,10 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
 |---|---|
 | `Alt+Shift+B` | Add this page (under the card it was opened from, or the capture target) |
 | `Alt+Shift+S` | Dive into the selected words |
+| `Alt+Shift+D` | Understood: close this tab, go to the next one |
+| `Alt+Shift+U` | Up to the card that needs this one |
+| `Alt+Shift+P` | Park it, go up |
+| `Alt+Shift+X` | Not related: remove this page's card |
 | `Alt+Shift+Z` / `Alt+Shift+Y` | Undo / redo |
 | `Alt+Shift+H` | Show or hide the breadcrumb |
 

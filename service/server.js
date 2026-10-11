@@ -363,6 +363,39 @@ function crumbs(cardIds, prefer) {
   return { trails: out, focus: f ? shared.trailOf(state, f.id).map(crumbOf) : [], board: b ? b.name : null, accent: state.settings.accent };
 }
 
+// ---------- resolving a card from the browser ----------
+// done: understood, then on to the next unfinished sibling (one already open in a tab first), else the parent.
+// park: set aside, back to the parent. unrelated: the card goes (the tab stays). One undo step each;
+// the extension then adds what it did to the tabs with /api/effects.
+function resolve({ cardId, action, prefer, clientId }) {
+  const c = state.cards[cardId];
+  if (!c || !['done', 'park', 'unrelated'].includes(action)) return null;
+  const trail = shared.trailOf(state, cardId, prefer);
+  const parent = trail.length > 1 ? trail[trail.length - 2] : null;
+  const now = Date.now();
+  const ops = action === 'unrelated' ? [{ t: 'card.del', id: c.id }]
+    : [{ t: 'card.put', card: { id: c.id, boardId: c.boardId, ...(action === 'done' ? { status: 'done', doneAt: now } : { status: 'parked', parkedAt: now }) } }];
+  const label = action === 'done' ? `Understood “${c.title}”` : action === 'park' ? `Parked “${c.title}”` : `Removed “${c.title}” (not related)`;
+  const entry = record(ops, { label, source: 'browser', clientId });
+  let next = null, parentReady = false;
+  if (parent && action !== 'unrelated') {
+    const kids = shared.kidsOf(state, parent.id);
+    parentReady = kids.length > 0 && kids.every(k => k.status === 'done');
+    const open = new Set(openTabs.map(t => t.cardId));
+    const todo = kids.filter(k => k.id !== c.id && k.status !== 'done' && k.status !== 'parked')
+      .sort((a, b) => (open.has(b.id) - open.has(a.id)) || a.x - b.x || a.y - b.y);
+    next = action === 'done' && todo.length ? { kind: 'sibling', ...crumbOf(todo[0]) } : { kind: 'parent', ...crumbOf(parent) };
+  }
+  return { entry: entry ? entrySummary(entry) : null, card: { id: c.id, title: c.title }, parent: parent ? { id: parent.id, title: parent.title } : null, next, parentReady };
+}
+
+function addEffects(entryId, effects) {
+  const e = history.done.slice(-5).find(x => x.id === entryId);
+  if (!e || !Array.isArray(effects)) return false;
+  e.effects.push(...effects);
+  return true;
+}
+
 // After a browser restart: which card does each open URL belong to?
 function match(urls) {
   const out = {};
@@ -508,6 +541,17 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/preview' && req.method === 'POST') {
       const body = await readBody(req);
       return send(res, 200, { ok: true, ...preview(body) }, cors);
+    }
+
+    if (p === '/api/resolve' && req.method === 'POST') {
+      const body = await readBody(req);
+      const r = resolve(body);
+      return send(res, r ? 200 : 404, r ? { ok: true, ...r } : { ok: false, error: 'no such card' }, cors);
+    }
+
+    if (p === '/api/effects' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, added: addEffects(body.entryId, body.effects) }, cors);
     }
 
     if (p === '/api/anchor' && req.method === 'POST') {

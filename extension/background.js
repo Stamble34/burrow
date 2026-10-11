@@ -49,8 +49,9 @@ function connect() {
 }
 
 // ---------- bindings ----------
-function bind(tabId, cardId, url) {
-  S.bindings[tabId] = { cardId, url: url || '' };
+// created: this tab made the card (so "Not related" may remove it, not just let go of it).
+function bind(tabId, cardId, url, created = false) {
+  S.bindings[tabId] = { cardId, url: url || '', created };
   delete S.pending[tabId];
   browser.sessions.setTabValue(tabId, 'burrow', { cardId }).catch(() => {});
   save(); pushTabs(); refresh();
@@ -182,7 +183,7 @@ async function addPage(tabId, { url, title, parentId, sibling }, toastTab = tabI
   } catch (e) { return offline(toastTab); }
   if (tabId != null) {
     if (r.parent) S.prefer[r.card.id] = r.parent.id;
-    bind(tabId, r.card.id, url);
+    bind(tabId, r.card.id, url, !r.existing);
   }
   const text = r.existing ? `“${r.card.title}” is already on the map${r.parent ? ` (now under “${r.parent.title}”)` : ''}`
     : `Added “${r.card.title}”${r.parent ? ` under “${r.parent.title}”` : ` to ${r.board.name}`}${r.known ? ` · known from ${r.known}` : ''}`;
@@ -210,8 +211,9 @@ async function historyStep(kind, tabId) {
 }
 
 // Reverse (undo) or replay (redo) what the browser did alongside a change. Runs for undo from the app too.
-// Effects: bind {tabId, cardId} · opened {tabId, url, cardId}: a tab Burrow opened (undo closes it, redo
-// reopens it) · activated {fromTabId, toTabId}: Burrow switched tabs (undo goes back).
+// Effects: bind {tabId, cardId} · unbind {tabId, cardId} · opened {tabId, url}: a tab Burrow opened (undo
+// closes it, redo reopens it) · closed {tabId, url, cardId, index, windowId}: a tab Burrow closed (undo
+// restores it from the session, redo closes it again) · activated {fromTabId, toTabId}: Burrow switched tabs.
 const tabNow = (id) => { let t = id; for (let i = 0; i < 20 && S.alias[t] != null; i++) t = S.alias[t]; return t; };
 const tabExists = (id) => browser.tabs.get(id).then(() => true, () => false);
 
@@ -230,6 +232,22 @@ async function onHistory({ kind, entry }) {
         const tab = await browser.tabs.create({ url: fx.url, active: false });
         S.alias[t] = tab.id; save();
       }
+    } else if (fx.kind === 'unbind') {
+      const t = tabNow(fx.tabId);
+      if (!(await tabExists(t))) continue;
+      if (undo) bind(t, fx.cardId); else { unbind(t); S.asked[t] = true; save(); }
+    } else if (fx.kind === 'closed') {
+      const t = tabNow(fx.tabId);
+      if (!undo) { if (await tabExists(t)) await browser.tabs.remove(t); continue; }
+      if (await tabExists(t)) continue;
+      // Bring the tab back with its history, or at least its page.
+      const recent = await browser.sessions.getRecentlyClosed({ maxResults: 25 }).catch(() => []);
+      const hit = recent.find((s) => s.tab && sameUrl(s.tab.url, fx.url));
+      let tab = null;
+      if (hit) tab = (await browser.sessions.restore(hit.tab.sessionId).catch(() => null) || {}).tab || null;
+      if (!tab) tab = await browser.tabs.create({ url: fx.url, index: fx.index, windowId: fx.windowId }).catch(() => browser.tabs.create({ url: fx.url }));
+      S.alias[t] = tab.id; save();
+      if (fx.cardId) bind(tab.id, fx.cardId, fx.url);
     } else if (fx.kind === 'activated') {
       const t = tabNow(undo ? fx.fromTabId : fx.toTabId);
       if (await tabExists(t)) browser.tabs.update(t, { active: true }).catch(() => {});
@@ -396,7 +414,7 @@ async function dive(tab, { title, url, context }) {
     });
   } catch (e) { diving.delete(created.id); return offline(tab.id); }
   if (r.parent) S.prefer[r.card.id] = r.parent.id;
-  bind(created.id, r.card.id, target);
+  bind(created.id, r.card.id, target, true);
   diving.delete(created.id);
   const text = `Dove into “${r.card.title}”${r.parent ? ` under “${r.parent.title}”` : ''}`;
   const msg = { t: 'toast', text, undo: shortcutOf('undo'), redo: '' };
@@ -438,6 +456,77 @@ async function openFromApp({ url, cardId, anchor }) {
   restoreWhenLoaded(tab.id, anchor);
 }
 
+// ---------- resolve: done / park / not related ----------
+// Done: mark understood, go to the next unfinished sibling (else the parent), close this tab.
+// Park: set aside, go to the parent, close this tab. Not related: remove the card this tab made; the tab stays.
+// One undo step: the service records the change, and what happened to tabs is added to the same entry.
+async function resolveTab(tab, action) {
+  if (!tab) return;
+  const b = S.bindings[tab.id];
+  if (!b) return toast(tab.id, 'This tab isn’t on the map');
+  // A tab that only found an existing card (by URL, after a restart, …) just lets go of it.
+  if (action === 'unrelated' && !b.created) {
+    const title = ((lastCrumbs.trails[b.cardId] || []).slice(-1)[0] || {}).title || 'this card';
+    try { await api('/api/do', { ops: [], effects: [{ kind: 'unbind', tabId: tab.id, cardId: b.cardId }], label: `Unlinked this tab from “${title}”`, source: 'browser' }); } catch (e) { return offline(tab.id); }
+    unbind(tab.id); S.asked[tab.id] = true; save();
+    return toast(tab.id, `This tab is no longer “${title}” (the card stays)`, true);
+  }
+  let r;
+  try { r = await api('/api/resolve', { cardId: b.cardId, action, prefer: S.prefer }); } catch (e) { return offline(tab.id); }
+  if (!r.entry) return;
+  const addFx = (effects) => api('/api/effects', { entryId: r.entry.id, effects }).catch(() => {});
+
+  if (action === 'unrelated') {
+    unbind(tab.id); S.asked[tab.id] = true; save();
+    addFx([{ kind: 'unbind', tabId: tab.id, cardId: b.cardId }]);
+    return toast(tab.id, `Removed “${r.card.title}” from the map`, true);
+  }
+
+  const effects = [];
+  let target = null;
+  if (r.next) {
+    const open = tabOfCard(r.next.id);
+    if (open != null && open !== tab.id) {
+      target = open;
+      await browser.tabs.update(open, { active: true });
+    } else {
+      // The next card has no tab: reopen its page where you left off, or its search.
+      const url = r.next.url || searchUrl(r.next.title);
+      const created = await browser.tabs.create({ url, active: true, index: tab.index + 1, windowId: tab.windowId });
+      diving.add(created.id);
+      bind(created.id, r.next.id, url);
+      diving.delete(created.id);
+      if (r.next.url) restoreWhenLoaded(created.id, r.next.anchor);
+      effects.push({ kind: 'opened', tabId: created.id, url }, { kind: 'bind', tabId: created.id, cardId: r.next.id });
+      target = created.id;
+    }
+    effects.push({ kind: 'activated', fromTabId: tab.id, toTabId: target });
+  }
+  // Close the finished tab; its page stays on the card, and undo brings the tab back.
+  effects.push({ kind: 'closed', tabId: tab.id, url: tab.url, cardId: b.cardId, index: tab.index, windowId: tab.windowId });
+  await browser.tabs.remove(tab.id).catch(() => {});
+  addFx(effects);
+
+  const verb = action === 'done' ? 'Understood' : 'Parked';
+  let text = `${verb} “${r.card.title}”`;
+  if (r.next) text += r.next.kind === 'sibling' ? ` · next: “${r.next.title}”` : ` · back to “${r.next.title}”`;
+  if (action === 'done' && r.parentReady && r.parent) text += ` · everything “${r.parent.title}” needs is understood`;
+  if (target != null) {
+    laterToasts.set(target, { msg: { t: 'toast', text, undo: shortcutOf('undo'), redo: '' }, at: Date.now() });
+    if (ports.has(target)) ports.get(target).postMessage(laterToasts.get(target).msg);
+  } else toast(null, text);
+}
+
+// Up to the card this one is a prerequisite of, without changing anything.
+async function upToParent(tab) {
+  if (!tab) return;
+  const b = S.bindings[tab.id], p = S.pending[tab.id];
+  const trail = b ? lastCrumbs.trails[b.cardId] || [] : [];
+  const parent = b ? trail[trail.length - 2] : p ? (lastCrumbs.trails[p.parentId] || []).slice(-1)[0] : null;
+  if (!parent) return toast(tab.id, b ? 'This is a top-level card' : 'This tab isn’t on the map');
+  return goTo(parent.id, tab.id);
+}
+
 // ---------- commands ----------
 let lastCmd = { name: '', at: 0 };
 async function runCommand(name, tab) {
@@ -448,6 +537,10 @@ async function runCommand(name, tab) {
   const tabId = tab && tab.id;
   if (name === 'capture-page') return captureTab(tab);
   if (name === 'dive') return diveFromSelection(tab);
+  if (name === 'done') return resolveTab(tab, 'done');
+  if (name === 'park') return resolveTab(tab, 'park');
+  if (name === 'unrelated') return resolveTab(tab, 'unrelated');
+  if (name === 'up') return upToParent(tab);
   if (name === 'undo') return historyStep('undo', tabId);
   if (name === 'redo') return historyStep('redo', tabId);
   if (name === 'toggle-breadcrumb') {
@@ -479,6 +572,10 @@ browser.contextMenus.create({ id: 'burrow-dive-sel', title: 'Dive into “%s”'
 browser.contextMenus.create({ id: 'burrow-dive-link', title: 'Dive into this link', contexts: ['link'] });
 browser.contextMenus.create({ id: 'burrow-link', title: 'Add link to Burrow', contexts: ['link'] });
 browser.contextMenus.create({ id: 'burrow-page', title: 'Add page to Burrow', contexts: ['page'] });
+browser.contextMenus.create({ id: 'burrow-done', title: 'Understood, go to the next one', contexts: ['page'] });
+browser.contextMenus.create({ id: 'burrow-up', title: 'Up to the card that needs this', contexts: ['page'] });
+browser.contextMenus.create({ id: 'burrow-park', title: 'Park it for later', contexts: ['page'] });
+browser.contextMenus.create({ id: 'burrow-unrelated', title: 'Not related (remove from the map)', contexts: ['page'] });
 browser.contextMenus.create({ id: 'burrow-open', title: 'Open Burrow', contexts: ['browser_action'] });
 
 browser.contextMenus.onClicked.addListener((info, tab) => ready.then(() => {
@@ -492,6 +589,10 @@ browser.contextMenus.onClicked.addListener((info, tab) => ready.then(() => {
   }
   if (info.menuItemId === 'burrow-page') runCommand('capture-page', tab);
   if (info.menuItemId === 'burrow-dive-sel') diveFromSelection(tab);
+  if (info.menuItemId === 'burrow-done') runCommand('done', tab);
+  if (info.menuItemId === 'burrow-up') runCommand('up', tab);
+  if (info.menuItemId === 'burrow-park') runCommand('park', tab);
+  if (info.menuItemId === 'burrow-unrelated') runCommand('unrelated', tab);
   if (info.menuItemId === 'burrow-dive-link') diveIntoLink(tab, info);
   if (info.menuItemId === 'burrow-open') browser.tabs.create({ url: API + '/' });
 }));

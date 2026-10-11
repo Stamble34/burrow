@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Burrow",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "Remembers the path out of a rabbit hole: tabs you open from a page become prerequisites of it in Burrow, with a breadcrumb on every page.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -49,6 +49,22 @@
     "dive": {
       "suggested_key": { "default": "Alt+Shift+S" },
       "description": "Dive into the selected words (new card + search)"
+    },
+    "done": {
+      "suggested_key": { "default": "Alt+Shift+D" },
+      "description": "Understood: close this tab and go to the next one"
+    },
+    "up": {
+      "suggested_key": { "default": "Alt+Shift+U" },
+      "description": "Up to the card that needs this one"
+    },
+    "park": {
+      "suggested_key": { "default": "Alt+Shift+P" },
+      "description": "Park this card for later and go up"
+    },
+    "unrelated": {
+      "suggested_key": { "default": "Alt+Shift+X" },
+      "description": "Not related: remove this page's card from the map"
     },
     "undo": {
       "suggested_key": { "default": "Alt+Shift+Z" },
