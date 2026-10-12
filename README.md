@@ -46,7 +46,19 @@ cd desktop && npm install && npx electron .    # optional desktop window
 
 Statuses: **to learn** (blue), **learning** (yellow), **understood** (grey), **parked** (dashed: set aside for now).
 
-A card keeps every page you read for it. The details panel (`E`) shows the main link, the other sources and, for a card you dove into, the sentence it came from. A small dot in a card's corner means it's open in a browser tab.
+A card keeps every page you read for it. The details panel (`E`, press it again to close) shows the main link, the other sources and, for a card made from a selection, the sentence it came from. A small dot in a card's corner means it's open in a browser tab. New cards are titled in title case: “list of properties” becomes “List of Properties” (acronyms like BFS and notation like O(n log n) are left alone).
+
+### Card pages and notes
+
+Double-click a card (or press `Shift+E`) to open its page, like a page in Notion: a big title, its properties (status, tags, sources, where it came from, what it needs and what needs it) and its notes. `Esc` goes back to the map.
+
+- **Notes** are Markdown, and the page shows them formatted. Click any line to edit it; only the line you're in shows its Markdown. Start a line with `# ` (or `##`, `###`), `- `, `1. `, `[] `, `> ` or ```` ``` ```` to make a heading, list, to-do, quote or code block, or type `/` for a menu of blocks. `---` makes a divider. `Tab` and `Shift+Tab` nest list items, `Alt+↑/↓` moves a line, `Ctrl+Enter` ticks a to-do.
+- **Formatting:** `Ctrl+B` bold, `Ctrl+I` italic, `Ctrl+E` code, `Ctrl+K` link, `Ctrl+Shift+X` strikethrough, `Ctrl+Shift+H` highlight.
+- **Links to other cards:** type `[[` and pick a card. Clicking `[[Linked List]]` opens that card's page; if there's no such card yet, Burrow offers to add it as a prerequisite.
+- **Markdown view:** `Ctrl+/` (or *Page* / *Markdown* at the top) switches between the formatted page and the plain Markdown of the whole note, for big edits and pasting.
+- **Tags:** click *Add a tag*, type, `Enter`. Tags you've used before are suggested, each tag keeps its color everywhere, and they show on the card on the map. Click a tag to list every card with it (or type `#tag` in `Ctrl+K`).
+
+Notes and tags belong to the concept, so a card that is on several boards has the same notes on all of them.
 
 ## Shortcuts
 
@@ -55,8 +67,9 @@ A card keeps every page you read for it. The details panel (`E`) shows the main 
 | `N` / double-click | New card |
 | `Tab` | Add a prerequisite to the selected card (also works while typing a title) |
 | `Enter` | Add another prerequisite next to the selected one |
-| `F2` / double-click card | Rename |
-| `E` | Details: link, notes, what it needs, what needs it |
+| `F2` | Rename |
+| Double-click card / `Shift+E` | Open the card's page: notes, tags, properties |
+| `E` | Details sidebar on or off |
 | `D` / `Shift`+right-click | Toggle understood |
 | `Shift+D` | Understood, go back up |
 | `Space`, `1` `2` `3` | Cycle status / set status |
@@ -90,18 +103,22 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
   - `Shift+Enter` adds it next to that card instead (under the same parent).
   - `Esc` ignores it, and Burrow won't ask about that tab again. `Alt+Shift+B` still adds it later.
   - Clicking into the page leaves the prompt alone. It fades after about 10 seconds, which counts as ignoring it.
-- **Dive.** Select a few words you don't understand and press `Alt+Shift+S` (or right-click → **Dive into “…”**). Burrow adds them as a card under this tab's card, keeps the sentence they came from, and opens a Google search for them in a new tab tied to the new card. Right-click a link → **Dive into this link** does the same with the link's page. No prompt for these, since you asked; `Alt+Shift+Z` undoes the card and closes the tab.
+- **Make a card from words.** Select a few words you don't understand and press `Alt+Shift+S` (or right-click → **Make a card from “…”**). They become a card under this tab's card, titled in title case, and nothing opens: you stay where you are. The card keeps the sentence they came from. No prompt, since you asked; `Alt+Shift+Z` undoes it.
+- **Dive into a link.** Right-click a link → **Dive into this link** adds the link's page as a card under this one and opens it in a new tab tied to it. `Alt+Shift+Z` undoes the card and closes the tab.
 - **Read around.** Following links inside a bound tab adds those pages as extra sources of the same card (search result pages don't count). It never makes new cards.
-- **The breadcrumb** at the bottom left of every page shows the trail from the top card down to this tab: *BFS / Queue / Linked lists / Doubly linked list · 4 deep*. Click a step to switch to its tab, or to reopen its page (a card with no page yet reopens its search). On a tab that isn't on the map it shows where a capture would go. It hides in fullscreen.
-  - Hover it on a page you dove into to see where it came from: *From Queues: “A circular buffer is a fixed-size queue that wraps around at the end.”* Click that line to go back to that sentence.
-- **Climb back out.** When a page makes sense, press `Alt+Shift+D`. The card is marked understood, its tab closes (the page stays on the card), and Burrow takes you to the next prerequisite of the same card that you haven't finished, or back up to the card itself when there are none left. If that card's tab is closed, its page reopens where you left off (or its search, if it has no page yet). When everything a card needs is understood, the toast says so.
-  - `Alt+Shift+P` parks a card (set aside for now, shown dashed), closes its tab and goes up.
+- **The breadcrumb** at the bottom left of every page shows the trail from the top card down to this tab: *BFS / Queue / Linked lists / Doubly linked list · 4 deep*. Click a step to switch to its tab, or to reopen its page. On a tab that isn't on the map it shows where a capture would go. It hides in fullscreen.
+  - A card with no page (like *BFS*, which you typed in yourself) opens its notes in Burrow instead. If Burrow isn't open, a small box asks *Burrow isn't open. Show “BFS” there?*: `Enter` starts the app on that card's page, `Esc` (or ignoring it) does nothing.
+  - `Ctrl`+click a step to open that card's notes in Burrow instead of its page.
+  - Hover it on a page you made a card from to see where the card came from: *From Queues: “A circular buffer is a fixed-size queue that wraps around at the end.”* Click that line to go back to that sentence.
+- **Take notes.** `Alt+Shift+N` opens this tab's card on its page in Burrow, starting the app if it isn't open. Or click the Burrow icon in the toolbar and type a quick note: `Ctrl+Enter` adds it to the end of the card's notes, without leaving the page.
+- **Climb back out.** When a page makes sense, press `Alt+Shift+D`. The card is marked understood, its tab closes (the page stays on the card), and Burrow takes you to the next prerequisite of the same card that you haven't finished, or back up to the card itself when there are none left. If that card's tab is closed, its page reopens where you left off. A next prerequisite with no page yet opens a search for it; a card above with no page is left alone. When everything a card needs is understood, the toast says so.
   - `Alt+Shift+U` just goes up to the card that needs this one, without changing anything.
   - `Alt+Shift+X` says a page was a wrong turn: the card it made is removed and the tab stays open. A tab that was only matched to an existing card lets go of it instead.
   - All of these are in the page's right-click menu too, and `Alt+Shift+Z` undoes them, reopening a closed tab.
 - **Pick up where you were.** Leaving a bound tab remembers how far down you'd read. When the page is reopened later (from the breadcrumb or the app), it scrolls back there.
   - On pages where extensions can't draw (PDFs, `about:` pages, addons.mozilla.org), the toolbar icon shows the depth instead, and the prompt opens as a small window.
 - **Undo anything.** `Alt+Shift+Z` undoes the last Burrow change, and `Alt+Shift+Y` redoes it. The app and the browser share one history, so `Ctrl+Z` in the app undoes a page added in the browser and vice versa. Undoing an add also unbinds the tab.
+- **The toolbar popup** (click the Burrow icon) shows this tab's card with its tags and the end of its notes, a box for a quick note, and every command with its shortcut. `↑`/`↓` and `Enter` run them.
 - **Find anything.** `Alt+Shift+K` opens the Burrow palette over the page: type to jump to any card (its tab, or its page reopened), make a card under this one, or run any of the commands below. In the address bar, `bw` then a space searches cards too.
 - **See the whole map.** `Alt+Shift+O` opens the outline in Zen's sidebar: the board you're on as a tree, the card for this tab highlighted, open ones marked with a dot. Click a card to go to it.
 - **Focus mode** (off by default; preferences or the palette): tabs on the map that aren't on your current trail, next to the card you're on, or under it get hidden, or unloaded if you prefer. Turning it off brings them all back.
@@ -111,10 +128,10 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
 | Browser shortcut | |
 |---|---|
 | `Alt+Shift+B` | Add this page (under the card it was opened from, or the capture target) |
-| `Alt+Shift+S` | Dive into the selected words |
+| `Alt+Shift+S` | Make a card from the selected words (nothing opens) |
+| `Alt+Shift+N` | Open this tab's card and its notes in Burrow |
 | `Alt+Shift+D` | Understood: close this tab, go to the next one |
 | `Alt+Shift+U` | Up to the card that needs this one |
-| `Alt+Shift+P` | Park it, go up |
 | `Alt+Shift+X` | Not related: remove this page's card |
 | `Alt+Shift+K` | Palette: jump to a card, make one, run a command |
 | `Alt+Shift+O` | Outline in the sidebar |
@@ -122,7 +139,7 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
 | `Alt+Shift+Z` / `Alt+Shift+Y` | Undo / redo |
 | `Alt+Shift+H` | Show or hide the breadcrumb |
 
-Some sites use `Alt+Shift` letters for their own shortcuts (on Wikipedia `Alt+Shift+P` prints). On pages Burrow can draw on, its shortcuts win. Right-click a link and choose **Add link to Burrow** to add it without opening it.
+Some sites use `Alt+Shift` letters for their own shortcuts (on Wikipedia `Alt+Shift+U` opens the upload page). On pages Burrow can draw on, its shortcuts win. Right-click a link and choose **Add link to Burrow** to add it without opening it.
 
 To stop the prompts and only add pages with the shortcut, to search with something other than Google, or to turn on focus mode, open the extension's preferences (`about:addons` → Burrow → Preferences).
 

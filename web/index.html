@@ -28,7 +28,7 @@
           <span class="focus-title" id="focusTitle"></span>
         </button>
       </div>
-      <div class="tb-right">
+      <div class="tb-right" id="tbRight">
         <button class="tb-btn search-btn" id="searchBtn" title="Search and commands">
           <svg viewBox="0 0 24 24"><use href="#i-search"/></svg>
           <span>Search</span>
@@ -97,9 +97,13 @@
           <button data-status="done"><span class="sdot s-done"></span>Understood</button>
           <button data-status="parked"><span class="sdot s-parked"></span>Parked</button>
         </div>
-        <button class="icon-btn" id="detailsClose" title="Close (Esc)"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+        <div class="details-btns">
+          <button class="icon-btn" id="detailsPage" title="Open the page (⇧E, or double-click the card)"><svg viewBox="0 0 24 24"><use href="#i-expand"/></svg></button>
+          <button class="icon-btn" id="detailsClose" title="Close (E or Esc)"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+        </div>
       </div>
       <textarea id="dTitle" class="d-title" rows="1" placeholder="Topic" spellcheck="false"></textarea>
+      <div class="d-tags" id="dTags"></div>
       <label class="d-label" for="dUrl">Source</label>
       <div class="d-url">
         <input id="dUrl" placeholder="Paste a link" spellcheck="false">
@@ -111,6 +115,30 @@
       <textarea id="dNote" class="d-note" placeholder="What clicked, what's still fuzzy…"></textarea>
       <div class="d-rel" id="dRel"></div>
     </aside>
+
+    <!-- Card page: double-click a card, or Shift+E -->
+    <section class="page" id="page" hidden aria-label="Card page">
+      <header class="page-bar" id="pageBar">
+        <nav class="page-crumbs" id="pageCrumbs"></nav>
+        <div class="page-tools">
+          <div class="seg page-mode" id="pageMode" title="Page or Markdown (Ctrl+/)">
+            <button data-mode="page">Page</button>
+            <button data-mode="md">Markdown</button>
+          </div>
+          <button class="icon-btn" id="pageClose" title="Back to the map (Esc)"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+          <span id="pageWin"></span>
+        </div>
+      </header>
+      <div class="page-scroll" id="pageScroll" tabindex="-1">
+        <article class="page-doc" id="pageDoc">
+          <textarea class="page-title" id="pageTitle" rows="1" placeholder="Untitled" spellcheck="false"></textarea>
+          <div class="props" id="pageProps"></div>
+          <div class="page-body" id="pageBody"></div>
+          <textarea class="page-src" id="pageSrc" placeholder="Write Markdown…" spellcheck="false" hidden></textarea>
+        </article>
+      </div>
+    </section>
+    <div class="suggest" id="suggest" hidden></div>
 
     <!-- Context menu -->
     <div class="menu" id="menu" hidden></div>
@@ -154,10 +182,17 @@
       <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
       <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 4h9l4 4v12H6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-tag" viewBox="0 0 24 24"><path d="M4 12.5V5a1 1 0 0 1 1-1h7.5l7.5 7.5-8.5 8.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/></symbol>
+      <symbol id="i-quote" viewBox="0 0 24 24"><path d="M6 17c-1-1-1.5-2.2-1.5-3.8C4.5 10.5 6.3 8 9 7M15 17c-1-1-1.5-2.2-1.5-3.8 0-2.7 1.8-5.2 4.5-6.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     </defs>
   </svg>
 
   <script src="shared.js"></script>
+  <script src="markdown.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { URL } = require('url');
+const { spawn } = require('child_process');
 const shared = require('../web/shared.js');
 
 const PORT = Number(process.env.BURROW_PORT || 7417);
@@ -180,6 +181,39 @@ function setTabs(list, clientId) {
   broadcast({ tabs: openTabs, browser: !!tabsOwner });
 }
 
+// ---------- the app's windows ----------
+// The desktop window and app tabs connect to /api/events with `app=desktop|web`. The browser asks the
+// app to show a card's page (/api/reveal); when no window is open it can start the desktop app
+// (/api/launch), which is shown the card as soon as it connects.
+const apps = new Map(); // SSE response -> 'desktop' | 'web'
+let pendingReveal = null; // { cardId, at } for a window that is starting
+
+// No (or an unknown) card just brings the app up.
+function reveal(cardId) {
+  if (!apps.size) return { shown: false };
+  broadcast({ reveal: { cardId: state.cards[cardId] ? cardId : null } });
+  return { shown: true, desktop: [...apps.values()].includes('desktop') };
+}
+
+// Starts the desktop app next to this service (the installed copy, or the repo's in development).
+function launchDesktop(cardId) {
+  const dir = path.join(__dirname, '..', 'desktop');
+  const electron = path.join(dir, 'node_modules', 'electron', 'dist', 'electron');
+  if (!fs.existsSync(electron)) return false;
+  let sandboxed = false;
+  try { const st = fs.statSync(path.join(path.dirname(electron), 'chrome-sandbox')); sandboxed = st.uid === 0 && !!(st.mode & 0o4000); } catch (e) { /* no helper */ }
+  const env = { ...process.env, BURROW_PORT: String(PORT) };
+  delete env.ELECTRON_RUN_AS_NODE;
+  if (!env.DISPLAY && !env.WAYLAND_DISPLAY) env.DISPLAY = ':0';
+  try {
+    const child = spawn(electron, [...(sandboxed ? [] : ['--no-sandbox']), dir], { env, detached: true, stdio: 'ignore' });
+    child.on('error', (e) => console.error('[burrow] Could not start the desktop app:', e.message));
+    child.unref();
+  } catch (e) { return false; }
+  pendingReveal = state.cards[cardId] ? { cardId, at: Date.now() } : null;
+  return true;
+}
+
 // ---------- page titles ----------
 function decodeEntities(s) {
   return s.replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos|nbsp|#39);/gi, (m, e) => {
@@ -246,7 +280,7 @@ function placement({ parentId, sibling, boardId }) {
 function preview({ url, title, parentId, sibling }) {
   const { parent, board } = placement({ parentId, sibling });
   const existing = url ? cardOnBoardWithUrl(board.id, url) : null;
-  const t = shared.cleanTitle(title || '', url);
+  const t = shared.titleCase(shared.cleanTitle(title || '', url));
   const known = existing ? null : shared.findConcept(state, { title: t, url }, board.id);
   return {
     title: existing ? existing.title : t,
@@ -281,13 +315,13 @@ async function capture({ url, title, note, boardId, parentId, sibling, effects, 
       ops.push({ t: 'link.put', link: { id: shared.uid('l_'), boardId: bId, from: parent.id, to: existing.id } });
     }
     const entry = record(ops, { label: label || `Linked “${existing.title}”`, effects, source: 'browser', clientId });
-    return { card: existing, parent, existing: true, board, entry };
+    return { card: existing, parent: parent && parent.id !== existing.id ? parent : null, existing: true, board, entry };
   }
 
   let spot = spotUnder(parent, cards);
   if (sibling && anchor && !parent) spot = { x: anchor.x + CARD_W + 24, y: anchor.y };
   const card = {
-    id: shared.uid('c_'), boardId: bId, title: exactTitle && rawTitle ? rawTitle.replace(/\s+/g, ' ').slice(0, 200) : shared.cleanTitle(rawTitle, url),
+    id: shared.uid('c_'), boardId: bId, title: shared.titleCase(exactTitle && rawTitle ? rawTitle.replace(/\s+/g, ' ').trim().slice(0, 200) : shared.cleanTitle(rawTitle, url)),
     urls: url ? [{ url, title: rawTitle, visitedAt: Date.now() }] : [],
     note: note ? String(note).slice(0, 4000) : '', status: 'todo', x: spot.x, y: spot.y, createdAt: Date.now(), source: 'capture',
   };
@@ -319,9 +353,12 @@ function isSearchUrl(url) {
   } catch (e) { return false; }
 }
 
+// Burrow's own pages (the app open in a tab) are never a source either.
+const isAppUrl = (url) => { try { const u = new URL(url); return /^(127\.0\.0\.1|localhost)$/.test(u.hostname) && Number(u.port) === PORT; } catch (e) { return false; } };
+
 function addSource({ cardId, url, title }) {
   const c = state.cards[cardId];
-  if (!c || !/^https?:/i.test(url || '') || isSearchUrl(url)) return false;
+  if (!c || !/^https?:/i.test(url || '') || isSearchUrl(url) || isAppUrl(url)) return false;
   const k = shared.urlKey(url);
   if ((c.urls || []).some(u => shared.urlKey(u.url) === k)) return false;
   const urls = [...(c.urls || []), { url, title: String(title || '').slice(0, 300), visitedAt: Date.now() }].slice(-30);
@@ -531,8 +568,17 @@ const server = http.createServer(async (req, res) => {
       res.write(`retry: 1500\ndata: ${JSON.stringify({ hello: true, rev, tabs: openTabs, browser: !!tabsOwner })}\n\n`);
       streams.add(res);
       const who = u.searchParams.get('clientId');
+      const kind = u.searchParams.get('app');
+      if (kind === 'desktop' || kind === 'web') {
+        apps.set(res, kind);
+        if (pendingReveal && Date.now() - pendingReveal.at < 30000 && state.cards[pendingReveal.cardId]) {
+          res.write(`data: ${JSON.stringify({ reveal: { cardId: pendingReveal.cardId } })}\n\n`);
+        }
+        pendingReveal = null;
+      }
       req.on('close', () => {
         streams.delete(res);
+        apps.delete(res);
         // The browser went away: its tabs are no longer open.
         if (who && who === tabsOwner) setTabs([], null);
       });
@@ -568,6 +614,35 @@ const server = http.createServer(async (req, res) => {
       const anchor = u && (u.scroll || u.fragment) ? { scroll: u.scroll || 0, fragment: u.fragment || null } : null;
       if (ok) broadcast({ open: { url: body.url, cardId: body.cardId || null, anchor } });
       return send(res, 200, { ok: true, routed: ok }, cors);
+    }
+
+    if (p === '/api/reveal' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, ...reveal(body.cardId) }, cors);
+    }
+
+    if (p === '/api/launch' && req.method === 'POST') {
+      const body = await readBody(req);
+      return send(res, 200, { ok: true, launched: launchDesktop(body.cardId) }, cors);
+    }
+
+    // One card for the extension's popup.
+    if (p === '/api/card' && req.method === 'POST') {
+      const body = await readBody(req);
+      const c = state.cards[body.cardId];
+      if (!c) return send(res, 404, { ok: false, error: 'no such card' }, cors);
+      return send(res, 200, { ok: true, card: { id: c.id, title: c.title, status: c.status, tags: c.tags || [], note: c.note || '', url: shared.primaryUrl(c), board: state.boards[c.boardId].name } }, cors);
+    }
+
+    // A quick note from the browser, added at the end of the card's notes. Undoable.
+    if (p === '/api/note' && req.method === 'POST') {
+      const body = await readBody(req);
+      const c = state.cards[body.cardId];
+      const text = String(body.text || '').trim();
+      if (!c || !text) return send(res, 400, { ok: false, error: 'card and text required' }, cors);
+      const note = (c.note || '').replace(/\s+$/, '');
+      const e = record([{ t: 'card.put', card: { id: c.id, boardId: c.boardId, note: (note ? note + '\n' : '') + text.slice(0, 20000) } }], { label: `Noted on “${c.title}”`, source: 'browser', clientId: body.clientId });
+      return send(res, 200, { ok: true, entry: e ? entrySummary(e) : null }, cors);
     }
 
     if (p === '/api/tabs') {
@@ -630,6 +705,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/capture' && req.method === 'POST') {
       const body = await readBody(req);
       if (!body.url && !body.title) return send(res, 400, { ok: false, error: 'url or title required' }, cors);
+      if (body.url && isAppUrl(body.url)) return send(res, 400, { ok: false, error: 'That is Burrow itself' }, cors);
       const r = await capture(body);
       return send(res, 200, {
         ok: true, existing: r.existing, board: { id: r.board.id, name: r.board.name },

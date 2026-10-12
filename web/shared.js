@@ -9,7 +9,7 @@
   const VERSION = 2;
   // A concept is the set of cards (one per board) that share a conceptId.
   // These fields are the concept itself; position, links and `context` stay per board.
-  const CONCEPT_FIELDS = ['title', 'urls', 'note', 'status', 'doneAt', 'parkedAt'];
+  const CONCEPT_FIELDS = ['title', 'urls', 'note', 'tags', 'status', 'doneAt', 'parkedAt'];
   const RANK = { todo: 0, parked: 0, doing: 1, done: 2 };
 
   function emptyState() {
@@ -312,5 +312,31 @@
     return t.slice(0, 200) || 'Untitled';
   }
 
-  return { STATUSES, VERSION, CONCEPT_FIELDS, migrateCard, primaryUrl, inverseOf, applyWithInverse, parentsOf, kidsOf, trailOf, emptyState, uid, normalize, applyOp, cleanTitle, conceptCards, titleKey, urlKey, findConcept, joinOps, mergeRepeatedOps };
+  // New cards are titled in title case: "list of properties" -> "List of Properties". Words that already
+  // carry capitals inside (BFS, iPhone) or look like code, notation or a URL are left as they are.
+  const SMALL_WORDS = new Set(['a', 'an', 'the', 'and', 'but', 'or', 'nor', 'for', 'so', 'yet', 'of', 'on', 'in', 'at', 'to', 'by', 'as', 'via', 'per', 'vs', 'with', 'from', 'into', 'onto', 'over', 'than']);
+  function titleCase(title) {
+    const parts = String(title || '').split(/(\s+)/);
+    const words = parts.map((w, i) => (/\S/.test(w) ? i : -1)).filter((i) => i >= 0);
+    const first = words[0], last = words[words.length - 1];
+    let afterBreak = false, depth = 0;
+    return parts.map((w, i) => {
+      if (!/\S/.test(w)) return w;
+      const force = i === first || i === last || afterBreak;
+      afterBreak = /[:.!?—–]$/.test(w) || w === '-';
+      // "O(n log n)" is notation; "(see below)" is prose.
+      const math = depth > 0 || /^[^(\s]+\(/.test(w);
+      if (math) depth = Math.max(0, depth + (w.match(/\(/g) || []).length - (w.match(/\)/g) || []).length);
+      if (math || /[./_@\\=<>]\p{L}/u.test(w) || /\p{Lu}/u.test(w.slice(1))) return w;
+      return w.split('-').map((part, k) => {
+        const m = part.match(/^([^\p{L}\p{N}]*)(\p{L})(.*)$/u);
+        if (!m) return part;
+        const bare = (m[2] + m[3]).toLowerCase().replace(/[^\p{L}\p{N}]+$/u, '');
+        if (!force && k === 0 && SMALL_WORDS.has(bare)) return part.toLowerCase();
+        return m[1] + m[2].toUpperCase() + m[3];
+      }).join('-');
+    }).join('');
+  }
+
+  return { titleCase, STATUSES, VERSION, CONCEPT_FIELDS, migrateCard, primaryUrl, inverseOf, applyWithInverse, parentsOf, kidsOf, trailOf, emptyState, uid, normalize, applyOp, cleanTitle, conceptCards, titleKey, urlKey, findConcept, joinOps, mergeRepeatedOps };
 });

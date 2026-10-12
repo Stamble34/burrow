@@ -22,6 +22,7 @@
   let edit = null;           // { id, isNew, ta }
   let linkMode = null;       // { from }
   let detailsId = null;
+  let pendingReveal = null;  // a card the browser asked to show before the state loaded
   const sizes = new Map();
   const cardEls = new Map();
   let graph = { kids: new Map(), pars: new Map() };
@@ -61,6 +62,10 @@
   const keysHtml = (keys) => (keys || []).map((k) => `<kbd>${esc(k)}</kbd>`).join('');
   const lsGet = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignore */ } };
+  // Tags get a soft color from their name, so the same tag looks the same everywhere.
+  const tagColor = (t) => { let h = 0; for (const ch of t.toLowerCase()) h = (h * 31 + ch.codePointAt(0)) >>> 0; return ACCENTS[h % ACCENTS.length][1]; };
+  const tagHtml = (t, removable) => `<span class="tag" data-tag="${esc(t)}" style="--tag:${tagColor(t)}">${esc(t)}` +
+    (removable ? `<button class="tag-x" data-untag="${esc(t)}" title="Remove tag">${icon('x')}</button>` : '') + '</span>';
 
   function rebuildGraph() {
     const kids = new Map(), pars = new Map();
@@ -157,6 +162,7 @@
     applyAccent();
     renderAll();
     if (first) { restoreView(true); suggestRepeats(); }
+    if (pendingReveal) { const id = pendingReveal; pendingReveal = null; revealCard(id); }
   }
 
   function setTabs(list, browser) {
@@ -166,7 +172,7 @@
   }
 
   function connect() {
-    const es = new EventSource('/api/events');
+    const es = new EventSource(`/api/events?clientId=${encodeURIComponent(clientId)}&app=${desktop ? 'desktop' : 'web'}`);
     es.onmessage = async (e) => {
       const m = JSON.parse(e.data);
       if (m.hello) {
@@ -177,6 +183,7 @@
         return;
       }
       if (m.tabs) return setTabs(m.tabs, m.browser);
+      if (m.reveal) return revealCard(m.reveal.cardId);
       if (m.history) {
         const h = m.history;
         if (h.clientId !== clientId && h.entry.source === 'browser' && document.visibilityState === 'visible') toast(`${h.kind === 'undo' ? 'Undid' : 'Redid'} in the browser: ${h.entry.label}`);
@@ -196,6 +203,7 @@
     for (const id of [...selected]) if (!state.cards[id]) selected.delete(id);
     if (edit && !state.cards[edit.id]) edit = null;
     if (detailsId && !state.cards[detailsId]) closeDetails();
+    if (pg.id && !state.cards[pg.id]) closePage();
     if (ops.some((o) => o.t === 'settings.put')) applyAccent();
     if (boardId() !== prevBoard) { switchedBoard(); return; }
     renderAll();
@@ -360,6 +368,7 @@
     renderLinks();
     renderChrome();
     if (detailsId) fillDetails();
+    if (pg.id) fillPage();
   }
 
   function cardHtml(c) {
@@ -376,8 +385,10 @@
     if (sibs.length) meta += `<span class="meta-shared" title="Also on ${esc(sibs.map((o) => state.boards[o.boardId].name).join(', '))}">${icon('link')}${sibs.length}</span>`;
     if (kids.length) meta += `<span class="meta-kids ${ready ? 'ready-tag' : ''}" title="Prerequisites understood">${ready ? 'Ready · ' : ''}${doneKids}/${kids.length}</span>`;
     const tab = openTabs.has(c.id) ? '<span class="tab-dot" title="Open in a browser tab"></span>' : '';
+    const tags = c.tags || [];
     return `<span class="focus-pin">${icon('target')}Capturing</span>${tab}` +
       `<div class="card-head">${dot}<div class="card-title">${esc(c.title) || '<span style="color:var(--text-3);font-weight:400">Untitled</span>'}</div></div>` +
+      (tags.length ? `<div class="card-tags">${tags.slice(0, 3).map((t) => tagHtml(t)).join('')}${tags.length > 3 ? `<span class="tag" style="--tag:#8a8a96">+${tags.length - 3}</span>` : ''}</div>` : '') +
       `<div class="card-meta">${meta}</div>` +
       `<div class="handle" title="Drag to a card, or into empty space, to add a prerequisite"></div>`;
   }
@@ -533,7 +544,7 @@
 
   function createCard({ x, y, title = '', url = '', parentId = null, editNow = true }) {
     if (!board()) return;
-    const card = { id: S.uid('c_'), boardId: boardId(), title, url, note: '', status: 'todo', x: Math.round(x), y: Math.round(y), createdAt: Date.now() };
+    const card = { id: S.uid('c_'), boardId: boardId(), title: S.titleCase(title), url, note: '', status: 'todo', x: Math.round(x), y: Math.round(y), createdAt: Date.now() };
     const ops = [{ t: 'card.put', card }, ...adoptOps(card)];
     if (parentId) { ops.push({ t: 'link.put', link: { id: S.uid('l_'), boardId: boardId(), from: parentId, to: card.id } }); lastUpFrom.set(card.id, parentId); }
     commit(ops, { coalesce: 'new:' + card.id });
@@ -645,11 +656,11 @@
   }
   // Card and details links go through openLink too (plain clicks only; modifier clicks keep their default).
   document.addEventListener('click', (e) => {
-    const a = e.target.closest('a.src, #dSources a, a.d-context[href]');
+    const a = e.target.closest('a.src, #dSources a, a.d-context[href], .psrc a, a.pctx[href]');
     if (!a || e.button !== 0 || e.ctrlKey || e.shiftKey || e.metaKey || e.altKey) return;
     e.preventDefault();
     const card = a.closest('.card');
-    openLink(a.href, card ? card.dataset.id : detailsId);
+    openLink(a.href, card ? card.dataset.id : a.closest('.page') ? pg.id : detailsId);
   });
 
   function whatsNext() {
@@ -713,8 +724,9 @@
     edit = null;
     const c = state.cards[id];
     if (!c) return false;
-    const title = ta.value.replace(/\s+/g, ' ').trim();
+    let title = ta.value.replace(/\s+/g, ' ').trim();
     if (!title && isNew) { removeNewCard(id); return false; }
+    if (isNew) title = S.titleCase(title);
     const el = cardEls.get(id); if (el) el._html = null;
     if (title && title !== c.title) {
       const ops = [{ t: 'card.put', card: { id, boardId: c.boardId, title } }];
@@ -915,7 +927,7 @@
   els.viewport.addEventListener('dblclick', (e) => {
     if (e.target.closest('.card-edit') || e.target.closest('a.src')) return;
     const cardEl = e.target.closest('.card');
-    if (cardEl) { if (!e.target.closest('.handle')) startEdit(cardEl.dataset.id); return; }
+    if (cardEl) { if (!e.target.closest('.handle')) openPage(cardEl.dataset.id); return; }
     if (e.target.closest('.link-hit')) return;
     newCardAt(e.clientX, e.clientY);
   });
@@ -985,7 +997,8 @@
     const many = ids.length > 1;
     openMenu(x, y, [
       { label: 'Add prerequisite', keys: ['Tab'], run: () => addPrerequisite(id), hidden: many },
-      { label: 'Open details', keys: ['E'], run: () => openDetails(id), hidden: many },
+      { label: 'Open page', keys: ['⇧', 'E'], run: () => openPage(id), hidden: many },
+      { label: 'Details sidebar', keys: ['E'], run: () => openDetails(id), hidden: many },
       { label: 'Rename', keys: ['F2'], run: () => startEdit(id), hidden: many },
       { label: 'Open link', keys: ['O'], run: () => openUrl(id), hidden: many || !urlOf(c) },
       { sep: true },
@@ -1123,7 +1136,8 @@
       ['Add prerequisite to selected card', ['Tab']],
       ['Add another prerequisite next to it', ['Enter']],
       ['Rename card', ['F2']],
-      ['Open details and notes', ['E']],
+      ['Open the card page and notes', ['⇧', 'E'], 'or double-click the card'],
+      ['Details sidebar on or off', ['E']],
       ['Link to a prerequisite', ['L']],
       ['Paste links or lines as cards', ['Ctrl', 'V']],
       ['Delete', ['Del']],
@@ -1146,6 +1160,16 @@
       ['Open card link', ['O']],
       ['Zoom', ['Ctrl', 'Scroll']],
     ]],
+    ['Card page', [
+      ['Page or Markdown view', ['Ctrl', '/']],
+      ['Blocks: heading, list, to-do, code…', ['/'], 'or type # - 1. [] > ```'],
+      ['Link to another card', ['[', '['], 'Ctrl+click it to open'],
+      ['Bold, italic, code, link', ['Ctrl', 'B'], 'I, E, K'],
+      ['Indent a list item', ['Tab'], '⇧Tab to outdent'],
+      ['Move a block', ['Alt', '↑', '↓']],
+      ['Tick a to-do', ['Ctrl', 'Enter']],
+      ['Back to the map', ['Esc']],
+    ]],
     ['Arrange', [
       ['Tidy layout (or selected branch)', ['T']],
       ['Move a card without its neighbours', ['Ctrl', 'Drag']],
@@ -1158,6 +1182,7 @@
     if (e.defaultPrevented) return;
     const k = keyOf(e); const mod = e.ctrlKey || e.metaKey;
     if (!$('#paletteOverlay').hidden || !$('#helpOverlay').hidden) return;
+    if (pg.id) return pageKey(e);
     if (mod && (k === 'k' || k === 'K' || k === 'p')) { e.preventDefault(); return openPalette(); }
     if (mod && (k === 'b' || k === 'B')) { e.preventDefault(); return openPalette('boards'); }
     if (isTyping(e.target)) {
@@ -1184,7 +1209,8 @@
       case 'Enter': handled(); return p ? addSibling(p) : newCardHere();
       case 'n': case 'N': handled(); return newCardHere();
       case 'F2': handled(); return e.shiftKey ? openPalette('renameboard') : p && startEdit(p);
-      case 'e': case 'E': handled(); return p && openDetails(p);
+      case 'e': handled(); return detailsId && (!p || detailsId === p) ? closeDetails() : p && openDetails(p);
+      case 'E': handled(); return p && openPage(p);
       case ' ': handled(); return ids.length && cycleStatus(ids);
       case '1': return ids.length && setStatus(ids, 'todo');
       case '2': return ids.length && setStatus(ids, 'doing');
@@ -1209,7 +1235,7 @@
 
   // Paste a URL or a list of lines to create cards.
   window.addEventListener('paste', async (e) => {
-    if (isTyping(e.target) || !$('#paletteOverlay').hidden) return;
+    if (isTyping(e.target) || !$('#paletteOverlay').hidden || pg.id) return;
     const text = (e.clipboardData && e.clipboardData.getData('text/plain') || '').trim();
     if (!text) return;
     e.preventDefault();
@@ -1220,7 +1246,7 @@
     let anchor = parentId ? spotForChild(state.cards[parentId]) : (() => { const w = toWorld(mouse.x, mouse.y); return freeSpot(w.x - CARD_W / 2, w.y); })();
     for (const line of lines) {
       const isUrl = /^https?:\/\/\S+$/i.test(line);
-      const card = { id: S.uid('c_'), boardId: boardId(), title: isUrl ? hostOf(line) : line, urls: isUrl ? [{ url: line, title: '', visitedAt: Date.now() }] : [], note: '', status: 'todo', x: Math.round(anchor.x), y: Math.round(anchor.y), createdAt: Date.now() };
+      const card = { id: S.uid('c_'), boardId: boardId(), title: isUrl ? hostOf(line) : S.titleCase(line), urls: isUrl ? [{ url: line, title: '', visitedAt: Date.now() }] : [], note: '', status: 'todo', x: Math.round(anchor.x), y: Math.round(anchor.y), createdAt: Date.now() };
       ops.push({ t: 'card.put', card }, ...adoptOps(card));
       if (parentId) ops.push({ t: 'link.put', link: { id: S.uid('l_'), boardId: boardId(), from: parentId, to: card.id } });
       created.push(card);
@@ -1234,7 +1260,7 @@
       if (!urlOf(c)) continue;
       try {
         const r = await fetch('/api/title?url=' + encodeURIComponent(urlOf(c))); const d = await r.json();
-        if (d.title && state.cards[c.id] && state.cards[c.id].title === c.title) commit([{ t: 'card.put', card: { id: c.id, boardId: c.boardId, title: d.title } }], { undo: false });
+        if (d.title && state.cards[c.id] && state.cards[c.id].title === c.title) commit([{ t: 'card.put', card: { id: c.id, boardId: c.boardId, title: S.titleCase(d.title) } }], { undo: false });
       } catch (err) { /* keep hostname */ }
     }
   });
@@ -1253,6 +1279,7 @@
     if (!c) return closeDetails();
     const act = document.activeElement;
     if (force || act !== dEls.title) { dEls.title.value = c.title || ''; autosize(dEls.title); }
+    $('#dTags').innerHTML = (c.tags || []).map((t) => tagHtml(t)).join('');
     if (force || act !== dEls.url) dEls.url.value = urlOf(c);
     const more = c.urls.slice(1);
     dEls.sources.innerHTML = more.map((u, i) => `<li><a href="${esc(u.url)}" target="_blank" rel="noopener" title="${esc(u.url)}">${esc(u.title || hostOf(u.url))}</a>` +
@@ -1295,6 +1322,665 @@
   dEls.rel.addEventListener('click', (e) => { const j = e.target.closest('button[data-jump]'); if (j) return jumpToCard(j.dataset.jump); const b = e.target.closest('button[data-id]'); if (b) { selectOnly(b.dataset.id); openDetails(b.dataset.id); centerOn(b.dataset.id); } });
   $('#detailsClose').addEventListener('click', closeDetails);
   $('#dOpen').addEventListener('click', () => detailsId && openUrl(detailsId));
+  $('#detailsPage').addEventListener('click', () => detailsId && openPage(detailsId));
+  $('#dTags').addEventListener('click', () => detailsId && openPage(detailsId));
+
+  // ---------- card page ----------
+  // Double-click a card (or ⇧E) for its page: title, properties, tags and notes. Notes are Markdown
+  // (markdown.js), kept as blocks. In the page view every block is shown rendered and the one you're in
+  // shows its inline Markdown; "# ", "- ", "1. ", "[] ", "> ", "```", "---" or "/" make blocks, like Notion.
+  // The Markdown view (Ctrl+/) edits the whole note as text.
+  const M = window.BurrowMarkdown;
+  const pg = {
+    el: $('#page'), crumbs: $('#pageCrumbs'), scroll: $('#pageScroll'), title: $('#pageTitle'), props: $('#pageProps'),
+    body: $('#pageBody'), src: $('#pageSrc'), modeSeg: $('#pageMode'),
+    id: null, blocks: [], active: -1, ta: null, note: null, mode: lsGet('burrow.pageMode') === 'md' ? 'md' : 'page',
+  };
+  const TEXTY = new Set(['p', 'h', 'ul', 'ol', 'todo', 'quote']);
+  const tagInput = Object.assign(document.createElement('input'), { className: 'tag-input', spellcheck: false });
+  const srcInput = Object.assign(document.createElement('input'), { className: 'src-input', spellcheck: false, placeholder: 'Paste a link' });
+
+  // Growing a textarea inside the scrolling page must not move the page.
+  function fit(ta) { const top = pg.scroll.scrollTop; autosize(ta); pg.scroll.scrollTop = top; }
+  let renderT = null;
+  const renderSoon = () => { clearTimeout(renderT); renderT = setTimeout(() => { renderT = null; renderAll(); }, 400); };
+
+  function openPage(id) {
+    const c = state.cards[id]; if (!c) return;
+    commitEdit(); closeMenus(); closeSuggest();
+    if (!pg.id && desktop) $('#pageWin').appendChild($('#winControls'));
+    stopEditing();
+    pg.id = id; pg.note = null;
+    pg.el.hidden = false;
+    fillPage(true);
+    pg.scroll.scrollTop = 0;
+    if (!c.title) { pg.title.focus(); }
+    else if (!c.note) pg.mode === 'md' ? pg.src.focus() : editBlock(0, 'start');
+    else pg.scroll.focus({ preventScroll: true }); // arrows and Page Down scroll the page
+  }
+
+  function closePage() {
+    if (!pg.id) return;
+    const id = pg.id;
+    stopEditing(); closeSuggest();
+    pg.id = null; pg.el.hidden = true;
+    if (desktop) $('#tbRight').appendChild($('#winControls'));
+    clearTimeout(renderT); renderAll();
+    if (state.cards[id] && state.cards[id].boardId === boardId()) { selectOnly(id); ensureVisible(id); }
+    els.viewport.focus({ preventScroll: true });
+  }
+
+  // The browser asked to show this card (a breadcrumb or the notes shortcut in Zen).
+  function revealCard(id) {
+    if (!id) { if (desktop && desktop.raise) desktop.raise(); return; }
+    if (!loaded) { pendingReveal = id; return; }
+    const c = state.cards[id]; if (!c) return;
+    if (!$('#paletteOverlay').hidden) closePalette();
+    if (!$('#helpOverlay').hidden) closeHelp();
+    if (c.boardId !== boardId()) switchBoard(c.boardId);
+    selectOnly(id); centerOn(id);
+    openPage(id);
+    if (desktop && desktop.raise) desktop.raise();
+  }
+
+  function fillPage(force) {
+    const c = state.cards[pg.id];
+    if (!c) return closePage();
+    if (force || document.activeElement !== pg.title) { pg.title.value = c.title || ''; fit(pg.title); }
+    renderPageCrumbs(c);
+    renderProps(c);
+    const note = c.note || '';
+    if (force || note !== pg.note) {
+      pg.note = note;
+      if (pg.mode === 'md') { if (force || document.activeElement !== pg.src) { pg.src.value = note; fit(pg.src); } }
+      else { stopEditing(); pg.blocks = M.parse(note); renderBlocks(); }
+    }
+    pg.body.hidden = pg.mode === 'md'; pg.src.hidden = pg.mode !== 'md';
+    for (const b of pg.modeSeg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.mode === pg.mode);
+  }
+
+  function renderPageCrumbs(c) {
+    const b = state.boards[c.boardId];
+    pg.crumbs.innerHTML = `<button class="back" data-close title="Back to the map (Esc)">${icon('back')}</button>` +
+      `<button data-close title="Back to the map">${esc(b ? b.name : 'Board')}</button>` +
+      trailOf(c.id).map((x) => `<span class="sep">/</span><button data-page="${x.id}" class="${x.id === c.id ? 'current' : ''}" title="${esc(x.title)}">` +
+        `<span class="sdot s-${x.status}"></span><span class="t">${esc(x.title || 'Untitled')}</span></button>`).join('');
+  }
+
+  // ---------- page: properties ----------
+  const day = (t) => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: new Date(t).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+  function renderProps(c) {
+    const focused = document.activeElement === tagInput ? tagInput : document.activeElement === srcInput ? srcInput : null;
+    const sel = focused && [focused.selectionStart, focused.selectionEnd];
+    const row = (ic, label, v) => `<div class="prop"><div class="prop-k">${icon(ic)}<span>${label}</span></div><div class="prop-v">${v}</div></div>`;
+    const chip = (x) => `<button class="pchip" data-page="${x.id}" title="Open its page"><span class="sdot s-${x.status}"></span><span class="t">${esc(x.title || 'Untitled')}</span></button>`;
+    const tags = c.tags || [];
+    let html = row('target', 'Status', `<div class="seg pseg">${S.STATUSES.map((st) => `<button data-status="${st}" class="${c.status === st ? 'on' : ''}"><span class="sdot s-${st}"></span>${STATUS_LABEL[st]}</button>`).join('')}</div>`);
+    html += row('tag', 'Tags', `<div class="tags-edit">${tags.map((t) => tagHtml(t, true)).join('')}<span data-slot="tag"></span></div>`);
+    html += row('ext', c.urls.length > 1 ? 'Sources' : 'Source', `<div class="psources">${c.urls.map((u, i) => `<div class="psrc"><a href="${esc(u.url)}" target="_blank" rel="noopener" title="${esc(u.url)}">${esc(u.title || hostOf(u.url))}</a>` +
+      `<span class="src-host">${esc(hostOf(u.url))}</span><button class="icon-btn" data-drop="${i}" title="Remove this page">${icon('x')}</button></div>`).join('')}<span data-slot="src"></span></div>`);
+    const ctx = c.context && c.context.text ? c.context : null;
+    if (ctx) {
+      const from = ctx.fromCardId && state.cards[ctx.fromCardId];
+      html += row('quote', 'From', `<a class="pctx"${ctx.fromUrl ? ` href="${esc(ctx.fromUrl)}" target="_blank" rel="noopener" title="Back to the sentence on the page"` : ''}>${from ? `<b>${esc(from.title)}</b> · ` : ''}<q>${esc(ctx.text)}</q></a>`);
+    }
+    const ks = kidsOf(c.id), ps = parsOf(c.id), sibs = siblingsOf(c);
+    if (ks.length) html += row('down', 'Needs first', ks.map(chip).join(''));
+    if (ps.length) html += row('up', 'Needed for', ps.map(chip).join(''));
+    if (sibs.length) html += row('link', 'Also on', sibs.map((o) => `<button class="pchip" data-page="${o.id}">${icon('board')}<span class="t">${esc(state.boards[o.boardId].name)}</span></button>`).join(''));
+    const dates = [c.createdAt ? `Added ${day(c.createdAt)}` : '', c.status === 'done' && c.doneAt ? `understood ${day(c.doneAt)}` : ''].filter(Boolean).join(', ');
+    if (dates) html += row('calendar', 'Dates', `<span class="pdates">${dates}</span>`);
+    pg.props.innerHTML = html;
+    tagInput.placeholder = tags.length ? 'Add' : 'Add a tag';
+    $('[data-slot="tag"]', pg.props).replaceWith(tagInput);
+    $('[data-slot="src"]', pg.props).replaceWith(srcInput);
+    if (focused) { focused.focus({ preventScroll: true }); focused.setSelectionRange(...sel); }
+  }
+
+  function patchPage(fields, opts = {}) {
+    const c = state.cards[pg.id]; if (!c) return;
+    commit([{ t: 'card.put', card: { id: c.id, boardId: c.boardId, ...fields } }], opts);
+  }
+  const cleanTag = (t) => String(t || '').replace(/^#+/, '').replace(/[\s,]+/g, ' ').trim().slice(0, 40);
+  function addTag(t) {
+    const c = state.cards[pg.id]; t = cleanTag(t);
+    if (!c || !t) return;
+    const tags = c.tags || [];
+    if (tags.some((x) => x.toLowerCase() === t.toLowerCase())) return;
+    // Reuse the spelling of a tag that already exists elsewhere.
+    const known = allTags().find((x) => x.toLowerCase() === t.toLowerCase());
+    patchPage({ tags: [...tags, known || t] }, { label: `Tagged “${c.title}” ${known || t}` });
+  }
+  function removeTag(t) {
+    const c = state.cards[pg.id]; if (!c) return;
+    patchPage({ tags: (c.tags || []).filter((x) => x !== t) }, { label: `Removed tag ${t} from “${c.title}”` });
+  }
+  function allTags() {
+    const count = new Map();
+    for (const c of Object.values(state.cards)) for (const t of c.tags || []) count.set(t, (count.get(t) || 0) + 1);
+    return [...count.keys()].sort((a, z) => count.get(z) - count.get(a) || a.localeCompare(z));
+  }
+  // Tags used on other cards, plus "Add tag …" for a new one while typing.
+  function suggestTags() {
+    const c = state.cards[pg.id]; if (!c) return;
+    const typed = cleanTag(tagInput.value), q = typed.toLowerCase();
+    const mine = new Set((c.tags || []).map((t) => t.toLowerCase()));
+    const known = allTags().filter((t) => !mine.has(t.toLowerCase()) && (!q || t.toLowerCase().includes(q))).slice(0, 8);
+    const items = (typed && !mine.has(q) && !known.some((t) => t.toLowerCase() === q) ? [{ create: typed }] : []).concat(known);
+    if (!items.length) return closeSuggest();
+    openSuggest(tagInput, items, (t) => { addTag(t.create || t); tagInput.value = ''; suggestTags(); },
+      (t) => (t.create ? `<span class="sg-l">Add tag</span>${tagHtml(t.create)}` : tagHtml(t)), !!typed);
+  }
+  tagInput.addEventListener('focus', suggestTags);
+  tagInput.addEventListener('input', suggestTags);
+  tagInput.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== tagInput && sg.anchor === tagInput) closeSuggest(); }, 0));
+  tagInput.addEventListener('keydown', (e) => {
+    if (sg.anchor === tagInput && suggestKey(e)) return;
+    if (e.key === 'Enter' || e.key === ',' || (e.key === 'Tab' && tagInput.value.trim())) {
+      e.preventDefault();
+      if (tagInput.value.trim()) { addTag(tagInput.value); tagInput.value = ''; suggestTags(); }
+      return;
+    }
+    if (e.key === 'Backspace' && !tagInput.value) { const c = state.cards[pg.id]; const tags = (c && c.tags) || []; if (tags.length) { e.preventDefault(); removeTag(tags[tags.length - 1]); } return; }
+    if (e.key === 'Escape') { e.preventDefault(); tagInput.blur(); }
+  });
+
+  srcInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); srcInput.blur(); return; }
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    let url = srcInput.value.trim(); const c = state.cards[pg.id];
+    if (!url || !c) return;
+    if (!/^[a-z]+:/i.test(url)) url = 'https://' + url;
+    if (!/^https?:\/\/\S+\.\S+/.test(url) && !/^https?:\/\/localhost/.test(url)) return toast('That doesn’t look like a link');
+    srcInput.value = '';
+    if (c.urls.some((u) => u.url === url)) return;
+    patchPage({ urls: [...c.urls, { url, title: '', visitedAt: Date.now() }] }, { label: `Added a source to “${c.title}”` });
+  });
+
+  pg.props.addEventListener('click', (e) => {
+    const st = e.target.closest('[data-status]'); if (st) return setStatus([pg.id], st.dataset.status);
+    const x = e.target.closest('[data-untag]'); if (x) return removeTag(x.dataset.untag);
+    const tg = e.target.closest('.tag[data-tag]'); if (tg) return openPalette('all', undefined, '#' + tg.dataset.tag);
+    const d = e.target.closest('[data-drop]');
+    if (d) { const c = state.cards[pg.id]; return patchPage({ urls: c.urls.filter((u, i) => i !== +d.dataset.drop) }, { label: `Removed a source from “${c.title}”` }); }
+    const to = e.target.closest('[data-page]'); if (to) return openPage(to.dataset.page);
+    if (e.target.closest('.tags-edit')) tagInput.focus();
+  });
+
+  // ---------- page: title, header ----------
+  pg.title.addEventListener('input', () => {
+    fit(pg.title);
+    const c = state.cards[pg.id]; const t = pg.title.value.replace(/\s+/g, ' ');
+    if (c && t !== c.title) { patchPage({ title: t }, { coalesce: 'title:' + c.id, render: false }); renderSoon(); }
+  });
+  pg.title.addEventListener('keydown', (e) => {
+    const atEnd = pg.title.selectionStart === pg.title.value.length;
+    if (e.key === 'Enter' || (e.key === 'ArrowDown' && atEnd)) { e.preventDefault(); pg.mode === 'md' ? pg.src.focus() : editBlock(0, 'start'); }
+    else if (e.key === 'Escape') { e.preventDefault(); pg.title.blur(); }
+  });
+  pg.crumbs.addEventListener('click', (e) => {
+    if (e.target.closest('[data-close]')) return closePage();
+    const b = e.target.closest('[data-page]'); if (b) openPage(b.dataset.page);
+  });
+  $('#pageClose').addEventListener('click', closePage);
+  pg.modeSeg.addEventListener('click', (e) => { const b = e.target.closest('button[data-mode]'); if (b) setPageMode(b.dataset.mode); });
+  // Buttons on the page never take focus, so clicking one doesn't end what you're typing.
+  pg.el.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });
+  pg.scroll.addEventListener('scroll', () => pg.el.classList.toggle('scrolled', pg.scroll.scrollTop > 4), { passive: true });
+  $('#pageBar').addEventListener('dblclick', (e) => { if (desktop && !e.target.closest('button')) desktop.maximize(); });
+
+  function setPageMode(mode) {
+    if (!pg.id || mode === pg.mode) return;
+    const c = state.cards[pg.id];
+    if (mode === 'md') {
+      const at = pg.ta ? M.offsetOf(pg.blocks, pg.active, pg.ta.selectionStart) : null;
+      stopEditing();
+      pg.mode = 'md';
+      pg.src.value = c.note || ''; pg.note = pg.src.value;
+      pg.body.hidden = true; pg.src.hidden = false; fit(pg.src);
+      if (at != null) { pg.src.focus({ preventScroll: true }); pg.src.setSelectionRange(at, at); }
+    } else {
+      const off = document.activeElement === pg.src ? pg.src.selectionStart : null;
+      pg.mode = 'page';
+      pg.note = c.note || ''; pg.blocks = M.parse(pg.note);
+      pg.src.hidden = true; pg.body.hidden = false; renderBlocks();
+      if (off != null) { const p = M.blockAt(pg.blocks, off); editBlock(p.i, p.at); }
+    }
+    lsSet('burrow.pageMode', pg.mode);
+    for (const b of pg.modeSeg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.mode === pg.mode);
+  }
+
+  function saveNote(note) {
+    const c = state.cards[pg.id]; if (!c) return;
+    pg.note = note;
+    if ((c.note || '') === note) return;
+    patchPage({ note }, { coalesce: 'note:' + c.id, render: false, label: `Edited the notes on “${c.title || 'Untitled'}”` });
+    renderSoon();
+  }
+  const saveBlocks = () => saveNote(M.serialize(pg.blocks).replace(/\n+$/, ''));
+
+  // ---------- page: blocks ----------
+  const blockEl = (i) => pg.body.querySelector(`.blk[data-i="${i}"]`);
+  function blockHtml(b, i, num) {
+    const kind = b.type === 'h' ? 'h' + Math.min(3, b.level || 1) : b.type;
+    const cls = `blk b-${kind}${b.type === 'todo' && b.checked ? ' checked' : ''}`;
+    const ind = b.indent && M.LISTS.has(b.type) ? ` style="--indent:${b.indent}"` : '';
+    let mark = '', body;
+    if (b.type === 'ul') mark = `<span class="b-mark b-bullet" data-depth="${(b.indent || 0) % 3}"></span>`;
+    if (b.type === 'ol') mark = `<span class="b-mark b-num">${num}.</span>`;
+    if (b.type === 'todo') mark = `<span class="b-mark b-check" data-check title="Tick (Ctrl+Enter)">${icon('check')}</span>`;
+    if (b.type === 'code' && b.lang) mark = `<span class="b-lang">${esc(b.lang)}</span>`;
+    if (b.type === 'hr') body = '<hr>';
+    else if (b.type === 'code') body = `<pre class="b-body">${esc(b.text) || ' '}</pre>`;
+    else if (b.type === 'table') body = `<div class="b-body b-grid">${M.tableHtml(b.text)}</div>`;
+    else body = `<div class="b-body b-text">${M.inline(b.text)}</div>`;
+    return `<div class="${cls}" data-i="${i}"${ind}>${mark}${body}</div>`;
+  }
+  function renderBlocks() {
+    if (!pg.blocks.length) pg.blocks = [{ type: 'p', text: '' }];
+    const nums = M.numbering(pg.blocks);
+    pg.ta = null; pg.active = -1;
+    pg.body.innerHTML = pg.blocks.map((b, i) => blockHtml(b, i, nums[i])).join('');
+    pg.body.classList.toggle('blank', pg.blocks.length === 1 && pg.blocks[0].type === 'p' && !pg.blocks[0].text);
+  }
+  // Re-render after a change to the blocks, then edit block `i` at `at` (or keep editing where you were).
+  function rerender(i, at) {
+    const cur = pg.ta ? { i: pg.active, at: pg.ta.selectionStart } : null;
+    renderBlocks();
+    const t = i != null ? { i, at } : cur;
+    if (t) editBlock(t.i, t.at);
+    saveBlocks();
+  }
+
+  function editBlock(i, caret = 'end') {
+    if (pg.mode !== 'page' || !pg.id) return;
+    if (!pg.blocks.length) renderBlocks();
+    i = clamp(i, 0, pg.blocks.length - 1);
+    if (pg.active !== i || !pg.ta) {
+      stopEditing();
+      const b = pg.blocks[i], el = blockEl(i);
+      if (!el || b.type === 'hr') return;
+      const ta = document.createElement('textarea');
+      ta.className = 'b-edit'; ta.rows = 1; ta.value = b.text;
+      ta.spellcheck = b.type !== 'code' && b.type !== 'table';
+      ta.placeholder = { p: 'Type / for blocks, [[ to link a card', h: 'Heading', quote: 'Quote', code: 'Code', table: '' }[b.type] ?? 'List item';
+      $('.b-body', el).replaceWith(ta);
+      el.classList.add('editing');
+      pg.active = i; pg.ta = ta;
+      ta.addEventListener('input', onBlockInput);
+      ta.addEventListener('keydown', onBlockKey);
+      ta.addEventListener('blur', () => setTimeout(() => { if (pg.ta === ta && document.activeElement !== ta) stopEditing(); }, 0));
+      fit(ta);
+    }
+    const ta = pg.ta, n = ta.value.length;
+    const pos = caret === 'end' ? n : caret === 'start' ? 0 : clamp(caret, 0, n);
+    ta.focus({ preventScroll: true });
+    ta.setSelectionRange(pos, pos);
+    const r = ta.getBoundingClientRect(), box = pg.scroll.getBoundingClientRect();
+    if (r.bottom > box.bottom - 40) pg.scroll.scrollTop += r.bottom - box.bottom + 80;
+    else if (r.top < box.top + 60) pg.scroll.scrollTop -= box.top + 60 - r.top;
+  }
+  function stopEditing() {
+    const ta = pg.ta; if (!ta) return;
+    const i = pg.active; pg.ta = null; pg.active = -1;
+    if (sg.anchor === ta) closeSuggest();
+    const el = ta.closest('.blk');
+    if (el && pg.blocks[i]) el.outerHTML = blockHtml(pg.blocks[i], i, M.numbering(pg.blocks)[i]);
+    pg.body.classList.toggle('blank', pg.blocks.length === 1 && pg.blocks[0].type === 'p' && !pg.blocks[0].text);
+  }
+
+  // Where in the source a click on rendered text lands.
+  function caretFromPoint(e, el, b) {
+    const body = $('.b-body', el); if (!body) return 'end';
+    let node = null, off = 0;
+    if (document.caretRangeFromPoint) { const r = document.caretRangeFromPoint(e.clientX, e.clientY); if (r) { node = r.startContainer; off = r.startOffset; } }
+    else if (document.caretPositionFromPoint) { const p = document.caretPositionFromPoint(e.clientX, e.clientY); if (p) { node = p.offsetNode; off = p.offset; } }
+    if (!node || !body.contains(node)) return 'end';
+    const r = document.createRange(); r.setStart(body, 0); r.setEnd(node, off);
+    const n = r.toString().length;
+    if (b.type === 'code') return n;
+    if (b.type === 'table') return 'end';
+    return M.sourceOffset(b.text, body.textContent, n);
+  }
+
+  pg.body.addEventListener('mousedown', (e) => {
+    const chk = e.target.closest('[data-check]');
+    if (chk) { e.preventDefault(); toggleCheck(+chk.closest('.blk').dataset.i); }
+  });
+  pg.body.addEventListener('click', (e) => {
+    if (e.target.closest('textarea, [data-check]')) return;
+    const a = e.target.closest('a');
+    if (a) { e.preventDefault(); return a.dataset.card != null ? openWiki(a.dataset.card) : openLink(a.href, null); }
+    const sel = getSelection();
+    if (sel && !sel.isCollapsed && pg.body.contains(sel.anchorNode)) return; // selecting text to copy
+    const el = e.target.closest('.blk'); if (!el) return;
+    const i = +el.dataset.i, b = pg.blocks[i];
+    if (b && b.type !== 'hr') editBlock(i, caretFromPoint(e, el, b));
+  });
+  // Clicking under the notes continues them, like the end of a Notion page.
+  pg.scroll.addEventListener('click', (e) => {
+    if (pg.mode !== 'page' || e.target.closest('.blk, .props, .page-title, textarea, input, button, a')) return;
+    if (e.clientY < pg.body.getBoundingClientRect().bottom) return;
+    const last = pg.blocks[pg.blocks.length - 1];
+    if (!last || last.type !== 'p' || last.text) { pg.blocks.push({ type: 'p', text: '' }); renderBlocks(); }
+    editBlock(pg.blocks.length - 1, 'end');
+  });
+
+  // Markdown shortcuts typed at the start of a block.
+  const BLOCK_SHORTCUTS = [
+    [/^(#{1,3}) $/, (m) => ({ type: 'h', level: m[1].length })],
+    [/^[-*+] \[([ xX])\] $/, (m) => ({ type: 'todo', checked: m[1] !== ' ', indent: 0, marker: '-' })],
+    [/^\[([ xX]?)\] $/, (m) => ({ type: 'todo', checked: /x/i.test(m[1]), indent: 0, marker: '-' })],
+    [/^([-*+]) $/, (m) => ({ type: 'ul', marker: m[1], indent: 0 })],
+    [/^(\d{1,3})[.)] $/, (m) => ({ type: 'ol', num: +m[1], indent: 0 })],
+    [/^> $/, () => ({ type: 'quote' })],
+  ];
+  function onBlockInput() {
+    const ta = pg.ta, i = pg.active, b = pg.blocks[i]; if (!ta || !b) return;
+    const v = ta.value, caret = ta.selectionStart;
+    // A pasted (or Shift+Enter) line break: the text becomes as many blocks as it has lines.
+    if (TEXTY.has(b.type) && v.includes('\n')) {
+      const tail = v.length - ta.selectionEnd;
+      const raw = b.type === 'p' || M.parseLine(v.split('\n')[0]).type !== 'p' ? v : M.prefix(b) + v;
+      const nb = M.parse(raw);
+      pg.blocks.splice(i, 1, ...nb);
+      const last = i + nb.length - 1;
+      return rerender(last, Math.max(0, pg.blocks[last].text.length - tail));
+    }
+    if (b.type === 'p' && v === '---') { Object.assign(b, { type: 'hr', text: '' }); pg.blocks.splice(i + 1, 0, { type: 'p', text: '' }); return rerender(i + 1, 0); }
+    const head = v.slice(0, caret);
+    for (const [re, mk] of b.type === 'p' ? BLOCK_SHORTCUTS : b.type === 'ul' ? BLOCK_SHORTCUTS.slice(2, 3) : []) {
+      const m = head.match(re);
+      if (!m) continue;
+      const keep = b.type === 'ul' ? { indent: b.indent } : {};
+      Object.assign(b, mk(m), keep, { text: v.slice(m[0].length) });
+      return rerender(i, 0);
+    }
+    b.text = v; fit(ta); saveBlocks();
+    inlineSuggest();
+  }
+
+  function onBlockKey(e) {
+    const ta = pg.ta, i = pg.active, b = pg.blocks[i]; if (!ta || !b) return;
+    if (suggestKey(e)) return;
+    const k = keyOf(e), mod = e.ctrlKey || e.metaKey;
+    const s = ta.selectionStart, end = ta.selectionEnd, v = ta.value;
+    const stop = () => { e.preventDefault(); e.stopPropagation(); };
+    if (mod && !e.altKey) {
+      if (formatKey(e, ta)) return;
+      if (k === 'Enter') {
+        stop();
+        if (b.type === 'todo') return toggleCheck(i);
+        if (!TEXTY.has(b.type)) { pg.blocks.splice(i + 1, 0, { type: 'p', text: '' }); return rerender(i + 1, 0); }
+      }
+      return;
+    }
+    if (e.altKey && (k === 'ArrowUp' || k === 'ArrowDown')) { stop(); return moveBlock(i, k === 'ArrowUp' ? -1 : 1); }
+    if (k === 'Escape') { stop(); stopEditing(); return pg.scroll.focus({ preventScroll: true }); }
+    if (k === 'Enter' && !e.shiftKey && TEXTY.has(b.type)) { stop(); return enterAt(i, s, end); }
+    if (k === 'Tab') {
+      stop();
+      if (b.type === 'code') return document.execCommand('insertText', false, '  ');
+      if (M.LISTS.has(b.type)) return indentBlock(i, e.shiftKey ? -1 : 1);
+      return;
+    }
+    if (k === 'Backspace' && s === 0 && end === 0 && (TEXTY.has(b.type) || !v)) { stop(); return backspaceAtStart(i); }
+    if (k === 'Delete' && s === v.length && end === s && TEXTY.has(b.type)) { stop(); return deleteAtEnd(i); }
+    if (s !== end || e.shiftKey) return;
+    const up = k === 'ArrowUp' ? onEdgeLine(ta, -1) : k === 'ArrowLeft' && s === 0;
+    const down = k === 'ArrowDown' ? onEdgeLine(ta, 1) : k === 'ArrowRight' && s === v.length;
+    if (up) {
+      stop();
+      const p = nextEditable(i, -1);
+      return p >= 0 ? editBlock(p, 'end') : (pg.title.focus(), pg.title.setSelectionRange(pg.title.value.length, pg.title.value.length));
+    }
+    if (down) { const n = nextEditable(i, 1); if (n >= 0) { stop(); editBlock(n, 'start'); } }
+  }
+  const nextEditable = (i, d) => { for (let j = i + d; j >= 0 && j < pg.blocks.length; j += d) if (pg.blocks[j].type !== 'hr') return j; return -1; };
+
+  // Is the caret on the first (dir -1) or last (dir 1) line the textarea shows? Measured with a mirror,
+  // since long paragraphs wrap.
+  const mirror = document.createElement('div');
+  function onEdgeLine(ta, dir) {
+    const v = ta.value, s = ta.selectionStart, cs = getComputedStyle(ta);
+    const lh = parseFloat(cs.lineHeight) || 24;
+    if (ta.scrollHeight <= lh * 1.5) return true;
+    Object.assign(mirror.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', width: ta.clientWidth + 'px',
+      font: cs.font, letterSpacing: cs.letterSpacing, lineHeight: cs.lineHeight, padding: cs.padding, top: '0', left: '-9999px' });
+    mirror.textContent = v.slice(0, s);
+    const mark = document.createElement('span'); mark.textContent = '\u200b'; mirror.appendChild(mark);
+    document.body.appendChild(mirror);
+    const y = mark.offsetTop;
+    mirror.textContent = v + '\u200b';
+    const total = mirror.scrollHeight;
+    mirror.remove();
+    return dir < 0 ? y < lh * 0.5 : y + lh * 1.5 > total;
+  }
+
+  function enterAt(i, s, end) {
+    const b = pg.blocks[i], v = b.text;
+    const fence = b.type === 'p' && v.match(/^(```|~~~)([^`\s]*)$/);
+    if (fence) { Object.assign(b, { type: 'code', lang: fence[2], text: '' }); return rerender(i, 0); }
+    // Enter on an empty list item or quote ends it (outdenting first).
+    if (b.type !== 'p' && b.type !== 'h' && !v) { if (b.indent) b.indent--; else b.type = 'p'; return rerender(i, 0); }
+    const list = M.LISTS.has(b.type);
+    const fresh = (text) => (list ? { type: b.type, indent: b.indent, marker: b.marker, num: (b.num || 1) + 1, checked: false, text } : { type: 'p', text });
+    if (s === 0 && end === 0 && v) { pg.blocks.splice(i, 0, list ? fresh('') : { type: 'p', text: '' }); return rerender(i + 1, 0); }
+    b.text = v.slice(0, s);
+    pg.blocks.splice(i + 1, 0, fresh(v.slice(end)));
+    rerender(i + 1, 0);
+  }
+  function backspaceAtStart(i) {
+    const b = pg.blocks[i];
+    if (b.type !== 'p') {
+      if (M.LISTS.has(b.type) && b.indent) b.indent--;
+      else Object.assign(b, { type: 'p', indent: 0 });
+      return rerender(i, 0);
+    }
+    if (i === 0) return;
+    const p = pg.blocks[i - 1];
+    if (p.type === 'hr') { pg.blocks.splice(i - 1, 1); return rerender(i - 1, 0); }
+    if (!TEXTY.has(p.type)) { if (!b.text) pg.blocks.splice(i, 1); return rerender(i - 1, 'end'); }
+    const at = p.text.length;
+    p.text += b.text; pg.blocks.splice(i, 1);
+    rerender(i - 1, at);
+  }
+  function deleteAtEnd(i) {
+    const b = pg.blocks[i], n = pg.blocks[i + 1];
+    if (!n || !(n.type === 'hr' || TEXTY.has(n.type))) return;
+    const at = b.text.length;
+    if (n.type !== 'hr') b.text += n.text;
+    pg.blocks.splice(i + 1, 1);
+    rerender(i, at);
+  }
+  function indentBlock(i, d) {
+    const b = pg.blocks[i], prev = pg.blocks[i - 1];
+    const max = prev && M.LISTS.has(prev.type) ? (prev.indent || 0) + 1 : 0;
+    const next = clamp((b.indent || 0) + d, 0, Math.max(max, d < 0 ? (b.indent || 0) - 1 : 0));
+    if (next === (b.indent || 0)) return;
+    b.indent = next;
+    rerender();
+  }
+  function moveBlock(i, d) {
+    const j = i + d; if (j < 0 || j >= pg.blocks.length) return;
+    const at = pg.ta ? pg.ta.selectionStart : 0;
+    [pg.blocks[i], pg.blocks[j]] = [pg.blocks[j], pg.blocks[i]];
+    rerender(j, at);
+  }
+  function toggleCheck(i) {
+    const b = pg.blocks[i]; if (!b || b.type !== 'todo') return;
+    b.checked = !b.checked;
+    if (pg.ta && pg.active === i) return rerender();
+    const el = blockEl(i);
+    if (el && !el.classList.contains('editing')) el.outerHTML = blockHtml(b, i, null);
+    saveBlocks();
+  }
+
+  // Ctrl+B bold, Ctrl+I italic, Ctrl+E code, Ctrl+K link, Ctrl+Shift+X strike, Ctrl+Shift+H highlight.
+  // Edits go through execCommand so the textarea's own undo keeps working.
+  function formatKey(e, ta) {
+    const k = keyOf(e).toLowerCase();
+    const mark = !e.shiftKey ? { b: '**', i: '*', e: '`' }[k] : { x: '~~', h: '==' }[k];
+    if (mark) { e.preventDefault(); e.stopPropagation(); wrapSel(ta, mark); return true; }
+    if (k === 'k' && !e.shiftKey) {
+      e.preventDefault(); e.stopPropagation();
+      const s = ta.selectionStart, end = ta.selectionEnd, sel = ta.value.slice(s, end);
+      if (/^https?:\/\/\S+$/.test(sel)) { document.execCommand('insertText', false, `[](${sel})`); ta.setSelectionRange(s + 1, s + 1); }
+      else { document.execCommand('insertText', false, `[${sel}]()`); ta.setSelectionRange(s + sel.length + 3, s + sel.length + 3); }
+      return true;
+    }
+    return false;
+  }
+  function wrapSel(ta, mark) {
+    const s = ta.selectionStart, end = ta.selectionEnd, v = ta.value, sel = v.slice(s, end), n = mark.length;
+    if (v.slice(s - n, s) === mark && v.slice(end, end + n) === mark) {
+      ta.setSelectionRange(s - n, end + n);
+      document.execCommand('insertText', false, sel);
+      ta.setSelectionRange(s - n, end - n);
+      return;
+    }
+    document.execCommand('insertText', false, mark + sel + mark);
+    ta.setSelectionRange(s + n, end + n);
+  }
+
+  // ---------- page: "/" blocks and [[card]] links ----------
+  const SLASH = [
+    ['Text', '', { type: 'p' }], ['Heading 1', '#', { type: 'h', level: 1 }], ['Heading 2', '##', { type: 'h', level: 2 }],
+    ['Heading 3', '###', { type: 'h', level: 3 }], ['Bulleted list', '-', { type: 'ul', marker: '-', indent: 0 }],
+    ['Numbered list', '1.', { type: 'ol', num: 1, indent: 0 }], ['To-do list', '[]', { type: 'todo', checked: false, marker: '-', indent: 0 }],
+    ['Quote', '>', { type: 'quote' }], ['Code', '```', { type: 'code', lang: '' }], ['Divider', '---', { type: 'hr' }],
+    ['Table', '|', { type: 'table' }], ['Link to a card', '[[', null],
+  ];
+  function inlineSuggest() {
+    const ta = pg.ta, i = pg.active, b = pg.blocks[i];
+    if (!ta || !b || !TEXTY.has(b.type)) return closeSuggest();
+    const head = ta.value.slice(0, ta.selectionStart);
+    const sl = b.type === 'p' && head.match(/^\/([\w ]{0,20})$/);
+    if (sl) {
+      const q = sl[1].trim().toLowerCase();
+      const items = SLASH.filter(([label]) => !q || label.toLowerCase().split(' ').some((w) => w.startsWith(q)) || label.toLowerCase().startsWith(q));
+      return openSuggest(ta, items, (it) => applySlash(i, it, sl[0].length), ([label, hint]) => `<span class="sg-l">${esc(label)}</span><span class="sg-h">${esc(hint)}</span>`, true);
+    }
+    const wk = head.match(/\[\[([^\]\n]{0,60})$/);
+    if (wk) {
+      const q = wk[1].trim().toLowerCase(), here = state.cards[pg.id];
+      const seen = new Set();
+      const items = Object.values(state.cards)
+        .filter((c) => c.id !== pg.id && c.title && (!q || score(c.title, q) > 0))
+        .sort((a, z) => (z.boardId === here.boardId) - (a.boardId === here.boardId) || score(z.title, q) - score(a.title, q))
+        .filter((c) => { const key = S.titleKey(c.title); if (seen.has(key)) return false; seen.add(key); return true; }).slice(0, 8);
+      return openSuggest(ta, items, (c) => completeWiki(c.title, wk[0].length),
+        (c) => `<span class="sdot s-${c.status}"></span><span class="sg-l">${esc(c.title)}</span><span class="sg-h">${esc(state.boards[c.boardId].name)}</span>`, true);
+    }
+    closeSuggest();
+  }
+  function applySlash(i, [, , kind], len) {
+    const ta = pg.ta, b = pg.blocks[i]; if (!ta || !b) return;
+    const rest = ta.value.slice(len);
+    if (!kind) { ta.setSelectionRange(0, len); document.execCommand('insertText', false, '[[]]'); ta.setSelectionRange(2, 2); return inlineSuggest(); }
+    if (kind.type === 'hr') { Object.assign(b, { type: 'hr', text: '' }); pg.blocks.splice(i + 1, 0, { type: 'p', text: rest }); return rerender(i + 1, 0); }
+    if (kind.type === 'table') { Object.assign(b, { type: 'table', text: '| Column | Column |\n| --- | --- |\n|  |  |' }); return rerender(i, 2); }
+    Object.assign(b, kind, { text: rest });
+    rerender(i, 0);
+  }
+  function completeWiki(title, len) {
+    const ta = pg.ta; if (!ta) return;
+    const s = ta.selectionStart, close = ta.value.slice(s, s + 2) === ']]' ? 2 : 0;
+    ta.setSelectionRange(s - len, s + close);
+    document.execCommand('insertText', false, `[[${title}]]`);
+  }
+  // [[Title]] goes to that card's page (on this board first). A title with no card can be added as a prerequisite.
+  function openWiki(title) {
+    const k = S.titleKey(title), here = state.cards[pg.id];
+    const hits = Object.values(state.cards).filter((c) => S.titleKey(c.title) === k);
+    const hit = hits.find((c) => here && c.boardId === here.boardId) || hits[0];
+    if (hit) return openPage(hit.id);
+    if (!here || here.boardId !== boardId()) return toast(`No card called “${title}”`);
+    toast(`No card called “${title}”`, { action: { label: 'Add it as a prerequisite', run: () => {
+      const c = createCard({ ...spotForChild(here), title, parentId: here.id, editNow: false });
+      if (c) openPage(c.id);
+    } } });
+  }
+
+  // ---------- page: suggestion menu (blocks, card links, tags) ----------
+  const sg = { el: $('#suggest'), items: [], active: 0, pick: null, anchor: null, chosen: false };
+  function openSuggest(anchor, items, pick, render, preselect) {
+    if (!items.length) return closeSuggest();
+    Object.assign(sg, { items, pick, anchor, active: 0, chosen: !!preselect, render });
+    paintSuggest();
+    sg.el.hidden = false;
+    const r = anchor.getBoundingClientRect(), h = sg.el.offsetHeight;
+    sg.el.style.left = Math.max(8, Math.min(r.left, innerWidth - sg.el.offsetWidth - 12)) + 'px';
+    sg.el.style.top = (r.bottom + 6 + h < innerHeight ? r.bottom + 6 : Math.max(8, r.top - h - 6)) + 'px';
+  }
+  function paintSuggest() {
+    sg.el.innerHTML = sg.items.map((it, i) => `<button data-i="${i}" class="${i === sg.active && sg.chosen ? 'on' : ''}">${sg.render(it)}</button>`).join('');
+    const on = sg.el.querySelector('.on'); if (on) on.scrollIntoView({ block: 'nearest' });
+  }
+  function closeSuggest() { sg.el.hidden = true; sg.items = []; sg.pick = null; sg.anchor = null; }
+  const suggesting = () => !sg.el.hidden && sg.items.length > 0;
+  function suggestKey(e) {
+    if (!suggesting()) return false;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); e.stopPropagation();
+      sg.active = !sg.chosen ? (e.key === 'ArrowDown' ? 0 : sg.items.length - 1) : (sg.active + (e.key === 'ArrowDown' ? 1 : -1) + sg.items.length) % sg.items.length;
+      sg.chosen = true; paintSuggest(); return true;
+    }
+    if ((e.key === 'Enter' || e.key === 'Tab') && sg.chosen) {
+      e.preventDefault(); e.stopPropagation();
+      const it = sg.items[sg.active], f = sg.pick; closeSuggest(); f(it); return true;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSuggest(); return true; }
+    return false;
+  }
+  sg.el.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const b = e.target.closest('button[data-i]'); if (!b) return;
+    const it = sg.items[+b.dataset.i], f = sg.pick; closeSuggest(); f(it);
+  });
+  pg.scroll.addEventListener('scroll', () => { if (suggesting()) closeSuggest(); }, { passive: true });
+
+  // ---------- page: Markdown view ----------
+  pg.src.addEventListener('input', () => { fit(pg.src); saveNote(pg.src.value); });
+  pg.src.addEventListener('keydown', (e) => {
+    const ta = pg.src, k = keyOf(e), mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.altKey) return formatKey(e, ta);
+    if (k === 'Escape') { e.preventDefault(); return ta.blur(); }
+    if (k === 'Tab') { e.preventDefault(); return indentLines(ta, e.shiftKey ? -1 : 1); }
+    if (k !== 'Enter' || e.shiftKey || ta.selectionStart !== ta.selectionEnd) return;
+    // Lists continue on Enter; Enter on an empty item ends the list.
+    const s = ta.selectionStart, v = ta.value, ls = v.lastIndexOf('\n', s - 1) + 1, line = v.slice(ls, s);
+    const m = line.match(/^(\s*)([-*+] \[[ xX]\] |[-*+] |(\d+)([.)]) |> )/);
+    if (!m) return;
+    e.preventDefault();
+    if (line.length === m[0].length) { ta.setSelectionRange(ls, s); document.execCommand('delete'); return; }
+    const next = m[3] ? m[1] + (+m[3] + 1) + m[4] + ' ' : m[0].replace(/\[[xX]\]/, '[ ]');
+    document.execCommand('insertText', false, '\n' + next);
+  });
+  function indentLines(ta, d) {
+    const v = ta.value, s = ta.selectionStart, e = ta.selectionEnd;
+    const ls = v.lastIndexOf('\n', s - 1) + 1, le = v.indexOf('\n', e), end = le < 0 ? v.length : le;
+    const lines = v.slice(ls, end).split('\n');
+    const out = lines.map((l) => (d > 0 ? '  ' + l : l.replace(/^ {1,2}/, '')));
+    ta.setSelectionRange(ls, end);
+    document.execCommand('insertText', false, out.join('\n'));
+    const first = out[0].length - lines[0].length, total = out.join('\n').length - lines.join('\n').length;
+    ta.setSelectionRange(Math.max(ls, s + first), Math.max(ls, e + total));
+  }
+
+  // ---------- page: keys ----------
+  function pageKey(e) {
+    const k = keyOf(e), mod = e.ctrlKey || e.metaKey;
+    if (mod && k === '/') { e.preventDefault(); return setPageMode(pg.mode === 'md' ? 'page' : 'md'); }
+    if (isTyping(e.target)) return;
+    if (k === 'Escape') { e.preventDefault(); return suggesting() ? closeSuggest() : closePage(); }
+    if (mod && (k === 'z' || k === 'Z')) { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
+    if (mod && (k === 'y' || k === 'Y')) { e.preventDefault(); return redo(); }
+    if (mod && (k === 'k' || k === 'K')) { e.preventDefault(); return openPalette(); }
+    if (mod || e.altKey) return;
+    if (k === 'Enter') { e.preventDefault(); return pg.mode === 'md' ? pg.src.focus() : editBlock(pg.blocks.length - 1, 'end'); }
+  }
 
   // ---------- command palette ----------
   const pal = { overlay: $('#paletteOverlay'), input: $('#paletteInput'), list: $('#paletteList'), scope: $('#paletteScope'), items: [], active: 0, mode: 'all' };
@@ -1309,7 +1995,8 @@
       { label: 'Mark as to learn', keys: ['1'], run: () => setStatus([...selected], 'todo'), when: !!c },
       { label: 'Understood, go back up', keys: ['⇧', 'D'], run: doneAndUp, when: !!c },
       { label: 'What should I learn next?', keys: ['W'], run: whatsNext },
-      { label: 'Open details', keys: ['E'], run: () => openDetails(p), when: !!c },
+      { label: 'Open page', sub: 'title, tags and notes', keys: ['⇧', 'E'], run: () => openPage(p), when: !!c },
+      { label: 'Details sidebar', keys: ['E'], run: () => openDetails(p), when: !!c },
       { label: 'Open card link', keys: ['O'], run: () => openUrl(p), when: !!(c && urlOf(c)) },
       { label: selected.size === 1 ? 'Tidy this branch' : 'Tidy layout', keys: ['T'], run: () => tidy(selected.size === 1 ? p : undefined) },
       { label: 'Detach from other boards', sub: 'make this card its own concept', run: detachConcept, when: !!(c && siblingsOf(c).length) },
@@ -1363,12 +2050,15 @@
     } else {
       if (q) {
         const here = boardId();
-        const cs = Object.values(state.cards).map((c) => ({ c, s: score(c.title, q) + (c.boardId === here ? 5 : 0) })).filter((x) => x.s > 5)
-          .sort((a, z) => z.s - a.s).slice(0, 8)
-          .map(({ c }) => ({ kind: 'card', label: c.title || 'Untitled', html: highlight(c.title || 'Untitled', q), icon: statusIcon(c.status),
-            sub: c.boardId !== here ? `${state.boards[c.boardId].name} · ${STATUS_LABEL[c.status]}` : STATUS_LABEL[c.status], run: () => jumpToCard(c.id) }));
+        // "#tag" lists the cards with that tag.
+        const tq = q.startsWith('#') ? q.slice(1) : null;
+        const match = (c) => (tq != null ? ((c.tags || []).some((t) => t.toLowerCase().startsWith(tq)) ? 90 : 0) : score(c.title, q));
+        const cs = Object.values(state.cards).map((c) => ({ c, s: match(c) + (c.boardId === here ? 5 : 0) })).filter((x) => x.s > 5)
+          .sort((a, z) => z.s - a.s || z.c.createdAt - a.c.createdAt).slice(0, tq != null ? 30 : 8)
+          .map(({ c }) => ({ kind: 'card', label: c.title || 'Untitled', html: tq != null ? esc(c.title || 'Untitled') : highlight(c.title || 'Untitled', q), icon: statusIcon(c.status),
+            sub: [c.boardId !== here ? state.boards[c.boardId].name : '', STATUS_LABEL[c.status], ...(c.tags || []).map((t) => '#' + t)].filter(Boolean).join(' · '), run: () => jumpToCard(c.id) }));
         const p = primary();
-        cs.push({ kind: 'create', label: p ? `Add “${raw}” as a prerequisite` : `Create card “${raw}”`, icon: icon('plus'),
+        if (tq == null) cs.push({ kind: 'create', label: p ? `Add “${raw}” as a prerequisite` : `Create card “${raw}”`, icon: icon('plus'),
           sub: p ? `under “${state.cards[p].title}”` : '', run: () => createFromPalette(raw) });
         groups.push(['Cards', cs]);
         const bs = Object.values(state.boards).filter((b) => score(b.name, q) > 0).slice(0, 4).map((b) => boardItem(b, q));
@@ -1409,13 +2099,13 @@
     const a = nodes[pal.active]; if (a) a.scrollIntoView({ block: 'nearest' });
   }
 
-  function openPalette(mode = 'all', renameId = boardId()) {
+  function openPalette(mode = 'all', renameId = boardId(), text = '') {
     commitEdit(); closeMenus();
     pal.mode = mode;
     pal.renameId = renameId;
     pal.overlay.hidden = false;
     const renaming = mode === 'renameboard' && state.boards[renameId];
-    pal.input.value = renaming ? renaming.name : '';
+    pal.input.value = renaming ? renaming.name : text;
     pal.input.placeholder = mode === 'boards' ? 'Find or create a board' : mode === 'newboard' ? 'Name the new board' : mode === 'renameboard' ? 'New board name' : 'Search cards, boards and commands';
     pal.scope.hidden = mode === 'all';
     pal.scope.textContent = mode === 'boards' ? 'Boards' : mode === 'newboard' ? 'New board' : mode === 'renameboard' ? 'Rename board' : '';
@@ -1423,7 +2113,7 @@
     pal.input.focus();
     if (renaming) pal.input.select();
   }
-  function closePalette() { pal.overlay.hidden = true; els.viewport.focus({ preventScroll: true }); }
+  function closePalette() { pal.overlay.hidden = true; if (!pg.id) els.viewport.focus({ preventScroll: true }); }
 
   pal.input.addEventListener('input', buildPalette);
   pal.input.addEventListener('keydown', (e) => {
@@ -1441,6 +2131,7 @@
 
   function jumpToCard(id) {
     const c = state.cards[id]; if (!c) return;
+    if (pg.id) return openPage(id); // from the palette over a page: go to that card's page
     if (c.boardId !== boardId()) { switchBoard(c.boardId, () => { selectOnly(id); centerOn(id); }); return; }
     selectOnly(id); centerOn(id);
   }
@@ -1609,13 +2300,16 @@
 
   window.addEventListener('resize', () => applyView());
   // Buttons shouldn't keep focus, so Space/Enter keep working as canvas shortcuts.
-  document.addEventListener('click', (e) => { const b = e.target.closest('.topbar button, .hud button, .crumbs button, .toast button, .menu button, .swatch'); if (b) b.blur(); });
+  document.addEventListener('click', (e) => { const b = e.target.closest('.topbar button, .hud button, .crumbs button, .toast button, .menu button, .swatch, .details button'); if (b) b.blur(); });
 
   // ---------- start ----------
+  // http://127.0.0.1:7417/#card=<id> opens that card's page (the extension uses it when the app isn't open).
+  const hashCard = location.hash.match(/^#card=(.+)$/);
+  if (hashCard) { pendingReveal = decodeURIComponent(hashCard[1]); history.replaceState(null, '', location.pathname + location.search); }
   applyView();
   connect();
   loadState().catch(() => setOnline(false));
 
   // for debugging in devtools
-  window.burrow = { get state() { return state; }, view, undo, redo, tidy, fitBoard };
+  window.burrow = { get state() { return state; }, view, undo, redo, tidy, fitBoard, openPage, closePage, revealCard, get page() { return pg; } };
 })();

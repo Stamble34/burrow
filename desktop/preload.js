@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('burrowDesktop', {
   close: () => ipcRenderer.send('win', 'close'),
   onQuickAdd: (cb) => ipcRenderer.on('quick-add', () => cb()),
   raiseBrowser: () => ipcRenderer.send('raise-browser'),
+  raise: () => ipcRenderer.send('raise-self'),
 });

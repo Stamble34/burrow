@@ -111,6 +111,21 @@ ipcMain.on('raise-browser', () => {
   execFile('wmctrl', ['-x', '-a', 'Navigator.zen'], () => {});
 });
 
+// The browser asked to show a card's page. Cinnamon ignores focus requests from a window in the
+// background, so ask the window manager to raise it as well (by X window id).
+ipcMain.on('raise-self', (e) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  if (!w) return;
+  if (w.isMinimized()) w.restore();
+  w.show();
+  w.focus();
+  try {
+    const h = w.getNativeWindowHandle();
+    const xid = h.length >= 8 ? Number(h.readBigUInt64LE(0)) : h.readUInt32LE(0);
+    if (xid) execFile('wmctrl', ['-i', '-a', '0x' + xid.toString(16)], () => {});
+  } catch (err) { /* not X11 */ }
+});
+
 function showAndQuickAdd() {
   if (!win || win.isDestroyed()) return createWindow();
   if (win.isMinimized()) win.restore();

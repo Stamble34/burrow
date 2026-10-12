@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Burrow</title>
+<style>
+  :root { color-scheme: dark; --accent: #b8a4ff; --bg: #111114; --surface: #18181c; --surface-2: #1f1f24; --line: rgba(255,255,255,.08);
+    --text: #ececf1; --text-2: #a4a4b0; --text-3: #6e6e7a; --todo: #8fb8ff; --doing: #f6d97a; --done: #5f5f69; --parked: #9a8f80; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+  body { width: 360px; }
+  header { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; }
+  header svg { width: 18px; height: 18px; color: var(--accent); flex: none; }
+  header b { font-weight: 600; }
+  header .board { color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  header .conn { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: #5fd38a; flex: none; }
+  header .conn.off { background: #ff7d86; }
+  .card { margin: 0 10px 8px; padding: 11px 12px 12px; border-radius: 11px; background: var(--surface); border: 1px solid var(--line); }
+  .trail { color: var(--text-3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
+  .title { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; font-weight: 600; line-height: 1.35; }
+  .title .dot { margin-top: 5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+  .s-todo { background: var(--todo); } .s-doing { background: var(--doing); }
+  .s-done { border: 1.5px solid var(--done); } .s-parked { border: 1.5px dashed var(--parked); }
+  .tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0 0 16px; }
+  .tag { height: 19px; padding: 0 7px; border-radius: 5px; font-size: 11.5px; display: inline-flex; align-items: center;
+    color: color-mix(in oklab, var(--tag) 78%, white); background: color-mix(in oklab, var(--tag) 15%, transparent); }
+  .muted { color: var(--text-2); }
+  .preview { margin: 9px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); color: var(--text-2);
+    font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; max-height: 62px; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent); mask-image: linear-gradient(to bottom, #000 70%, transparent); }
+  textarea { display: block; width: 100%; min-height: 56px; max-height: 160px; margin-top: 9px; padding: 8px 10px; resize: none; border-radius: 8px; outline: 0;
+    background: var(--bg); border: 1px solid var(--line); color: var(--text); font: inherit; line-height: 1.5; }
+  textarea:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+  textarea::placeholder { color: var(--text-3); }
+  .note-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--text-3); font-size: 11.5px; }
+  .btn { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 7px;
+    background: color-mix(in oklab, var(--accent) 16%, transparent); color: var(--accent); font-weight: 600; font-size: 12.5px; }
+  .btn:hover { background: color-mix(in oklab, var(--accent) 24%, transparent); }
+  .btn[disabled] { opacity: .45; cursor: default; }
+  ul { list-style: none; margin: 0; padding: 4px 6px 6px; }
+  li.g { height: 1px; margin: 5px 6px; background: var(--line); }
+  li.row { display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 8px; border-radius: 7px; cursor: pointer; color: var(--text); }
+  li.row.on { background: rgba(255,255,255,.07); }
+  li.row .ic { width: 16px; display: grid; place-items: center; color: var(--text-3); flex: none; }
+  li.row.on .ic { color: var(--accent); }
+  li.row .lb { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  li.row .st { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+  li.row .k { margin-left: auto; display: flex; gap: 3px; flex: none; }
+  kbd { font: 10.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-2); background: rgba(255,255,255,.06);
+    border: 1px solid var(--line); border-radius: 5px; padding: 3px 5px; }
+  .off-msg { margin: 0 10px 10px; padding: 12px; border-radius: 11px; background: #23161a; border: 1px solid #4a2329; color: #ffb3b8; line-height: 1.5; }
+  .off-msg code { font: 12px ui-monospace, monospace; color: var(--text); }
+  footer { display: flex; align-items: center; gap: 4px; padding: 6px 8px 8px; border-top: 1px solid var(--line); }
+  footer button { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 7px; color: var(--text-2); font-size: 12px; }
+  footer button:hover { background: rgba(255,255,255,.07); color: var(--text); }
+  footer button b { font-weight: 500; color: var(--text); }
+  footer .gear { margin-left: auto; font-size: 14px; }
+</style>
+<header>
+  <svg viewBox="0 0 24 24"><path d="M4 18c0-5 3.6-9 8-9s8 4 8 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="18" r="2.4" fill="currentColor"/><path d="M12 9V4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  <b>Burrow</b><span class="board" id="board"></span><span class="conn" id="conn" title="Connected to Burrow"></span>
+</header>
+<main id="main"></main>
+<script src="popup.js"></script>

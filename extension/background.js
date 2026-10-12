@@ -2,6 +2,8 @@
 // - Tabs are bound to cards. A tab opened from a bound tab asks (once, when you first look at it)
 //   whether to add its page under that card. Navigating inside a bound tab adds sources to its card.
 // - Every page shows the trail from the top-level card down to this tab's card (content.js).
+// - A card's notes live in the Burrow app; the notes shortcut, Ctrl+click on a breadcrumb, or a click on a
+//   card without a page shows them there.
 // - Undo/redo share one history with the app, kept by the service.
 // The service (service/server.js) does the map logic; this file is browser glue.
 const API = 'http://127.0.0.1:7417';
@@ -325,6 +327,8 @@ async function onPageMessage(tabId, m) {
   if (m.t === 'undo') return historyStep('undo', tabId);
   if (m.t === 'redo') return historyStep('redo', tabId);
   if (m.t === 'go') return goTo(m.cardId, tabId);
+  if (m.t === 'notes') return openNotes(m.cardId, tabId, false);
+  if (m.t === 'askAnswer') { const had = asks.has(tabId), cardId = asks.get(tabId); asks.delete(tabId); if (had && m.yes) launchApp(cardId, tabId); return; }
   if (m.t === 'from') return backToSource(m.cardId, tabId);
   if (m.t === 'anchor') {
     const b = S.bindings[tabId];
@@ -362,12 +366,60 @@ async function goTo(cardId, fromTabId, info) {
   }
   const all = Object.values(lastCrumbs.trails).flat().concat(lastCrumbs.focus);
   const c = all.find((x) => x.id === cardId) || info;
-  if (!c) return;
-  // No page yet (a dive you haven't read for): search for it again.
-  const url = c.url || searchUrl(c.title);
-  const tab = await browser.tabs.create({ url, openerTabId: fromTabId });
-  bind(tab.id, cardId, url);
-  if (c.url && c.anchor) restoreWhenLoaded(tab.id, c.anchor);
+  // No page: the card is its notes, so show them in Burrow.
+  if (!c || !c.url) return openNotes(cardId, fromTabId, true);
+  const tab = await browser.tabs.create({ url: c.url, openerTabId: fromTabId });
+  bind(tab.id, cardId, c.url);
+  if (c.anchor) restoreWhenLoaded(tab.id, c.anchor);
+}
+
+// ---------- notes in the app ----------
+// A card's page with its notes is in the Burrow app. When a window of it is open, it shows the card
+// (the desktop window raises itself; an app tab is switched to). Otherwise `ask` offers to start it with
+// one key in the page; an explicit request (notes shortcut, Ctrl+click) starts it straight away.
+// cardId null: just bring Burrow up.
+const asks = new Map(); // tabId -> cardId waiting for "open Burrow?"
+const cardTitle = (id) => ((Object.values(lastCrumbs.trails).flat().concat(lastCrumbs.focus).find((x) => x.id === id)) ||
+  (lastOutline && findNode(lastOutline.roots, id)) || {}).title || 'this card';
+
+async function openNotes(cardId, tabId, ask) {
+  let r;
+  try { r = await api('/api/reveal', { cardId }); } catch (e) { return offline(tabId); }
+  if (r.shown) {
+    if (!r.desktop) {
+      const appTab = (await browser.tabs.query({})).find((t) => (t.url || '').startsWith(API + '/'));
+      if (appTab) { await activate(appTab.id); browser.windows.update(appTab.windowId, { focused: true }).catch(() => {}); }
+    }
+    return;
+  }
+  if (ask && tabId != null && ports.has(tabId)) {
+    asks.set(tabId, cardId);
+    return ports.get(tabId).postMessage({ t: 'ask', text: cardId ? `Burrow isn’t open. Show “${cardTitle(cardId)}” there?` : 'Burrow isn’t open. Start it?', yes: 'Open Burrow', no: 'Not now' });
+  }
+  return launchApp(cardId, tabId);
+}
+
+async function launchApp(cardId, tabId) {
+  let r;
+  try { r = await api('/api/launch', { cardId }); } catch (e) { return offline(tabId); }
+  if (r.launched) return toast(tabId, 'Opening Burrow…');
+  // No desktop app next to the service: the app in a tab does the same.
+  await browser.tabs.create({ url: API + '/' + (cardId ? '#card=' + encodeURIComponent(cardId) : ''), openerTabId: tabId != null ? tabId : undefined });
+}
+
+async function notesOf(tab) {
+  if (!tab) return;
+  const b = S.bindings[tab.id];
+  if (!b) return toast(tab.id, `This tab isn’t on the map. ${shortcutOf('capture-page') || 'Alt+Shift+B'} adds it.`);
+  return openNotes(b.cardId, tab.id, false);
+}
+
+// A quick note from the toolbar popup, added at the end of the card's notes.
+async function quickNote(cardId, text, tabId) {
+  let r;
+  try { r = await api('/api/note', { cardId, text }); } catch (e) { return { ok: false }; }
+  toast(tabId, `Added a note to “${cardTitle(cardId)}”`, !!r.entry);
+  return { ok: true };
 }
 
 // ---------- return anchors ----------
@@ -398,9 +450,9 @@ async function backToSource(cardId, fromTabId) {
   restoreWhenLoaded(tab.id, anchor);
 }
 
-// ---------- dive ----------
-// Explicit, so no prompt: a child card of this tab's card, titled from the selection (or the link),
-// opened in a new tab bound to it. Undo closes that tab and returns here.
+// ---------- card from a selection, dive into a link ----------
+// Explicit, so no prompt. Selected words become a child card of this tab's card and nothing opens.
+// A link's page opens in a new tab bound to its new card; undo closes that tab and returns here.
 const diving = new Set(); // tabs Burrow is opening right now; never prompt for them
 
 function parentFor(tab) {
@@ -432,11 +484,23 @@ async function dive(tab, { title, url, context }) {
   if (ports.has(created.id)) ports.get(created.id).postMessage(msg);
 }
 
-async function diveFromSelection(tab) {
+// The card keeps the sentence the words came from ("From …" on its page and in the breadcrumb).
+// `fallback`: the selection the context menu saw, for pages without a content script.
+async function cardFromSelection(tab, fallback) {
   if (!tab) return;
   const g = await browser.tabs.sendMessage(tab.id, { t: 'grab', kind: 'selection' }).catch(() => null);
-  if (!g || !g.text) return toast(tab.id, 'Select some words to dive into');
-  return dive(tab, { title: g.text.slice(0, 120), context: { text: g.sentence, quote: g.text, fromUrl: g.fragmentUrl } });
+  const text = (g && g.text) || String(fallback || '').replace(/\s+/g, ' ').trim();
+  if (!text) return toast(tab.id, 'Select some words to make a card of them');
+  let r;
+  try {
+    r = await api('/api/capture', { title: text.slice(0, 120), exactTitle: true, parentId: parentFor(tab),
+      context: g && g.text ? { text: g.sentence, quote: g.text, fromUrl: g.fragmentUrl } : null });
+  } catch (e) { return offline(tab.id); }
+  if (r.parent) S.prefer[r.card.id] = r.parent.id;
+  const text2 = r.existing ? `“${r.card.title}” is already on the map`
+    : `Added “${r.card.title}”${r.parent ? ` under “${r.parent.title}”` : ` to ${r.board.name}`}${r.known ? ` · known from ${r.known}` : ''}`;
+  toast(tab.id, text2, !!r.entry);
+  refresh();
 }
 
 async function diveIntoLink(tab, info) {
@@ -464,9 +528,9 @@ async function openFromApp({ url, cardId, anchor }) {
   restoreWhenLoaded(tab.id, anchor);
 }
 
-// ---------- resolve: done / park / not related ----------
+// ---------- resolve: done / not related ----------
 // Done: mark understood, go to the next unfinished sibling (else the parent), close this tab.
-// Park: set aside, go to the parent, close this tab. Not related: remove the card this tab made; the tab stays.
+// Not related: remove the card this tab made; the tab stays.
 // One undo step: the service records the change, and what happened to tabs is added to the same entry.
 async function resolveTab(tab, action) {
   if (!tab) return;
@@ -497,8 +561,9 @@ async function resolveTab(tab, action) {
     if (open != null && open !== tab.id) {
       target = open;
       await activate(open);
-    } else {
-      // The next card has no tab: reopen its page where you left off, or its search.
+    } else if (r.next.url || r.next.kind === 'sibling') {
+      // The next card has no tab: reopen its page where you left off. A sibling with no page yet gets a
+      // search, so you can look it up; a parent with no page is left alone (its notes are in Burrow).
       const url = r.next.url || searchUrl(r.next.title);
       const created = await browser.tabs.create({ url, active: true, index: tab.index + 1, windowId: tab.windowId });
       diving.add(created.id);
@@ -508,17 +573,17 @@ async function resolveTab(tab, action) {
       effects.push({ kind: 'opened', tabId: created.id, url }, { kind: 'bind', tabId: created.id, cardId: r.next.id });
       target = created.id;
     }
-    effects.push({ kind: 'activated', fromTabId: tab.id, toTabId: target });
+    if (target != null) effects.push({ kind: 'activated', fromTabId: tab.id, toTabId: target });
   }
   // Close the finished tab; its page stays on the card, and undo brings the tab back.
   effects.push({ kind: 'closed', tabId: tab.id, url: tab.url, cardId: b.cardId, index: tab.index, windowId: tab.windowId });
   await browser.tabs.remove(tab.id).catch(() => {});
   addFx(effects);
 
-  const verb = action === 'done' ? 'Understood' : 'Parked';
-  let text = `${verb} “${r.card.title}”`;
+  let text = `Understood “${r.card.title}”`;
   if (r.next) text += r.next.kind === 'sibling' ? ` · next: “${r.next.title}”` : ` · back to “${r.next.title}”`;
   if (action === 'done' && r.parentReady && r.parent) text += ` · everything “${r.parent.title}” needs is understood`;
+  if (target == null) [target] = (await browser.tabs.query({ active: true, windowId: tab.windowId }).catch(() => [])).map((t) => t.id);
   if (target != null) {
     laterToasts.set(target, { msg: { t: 'toast', text, undo: shortcutOf('undo'), redo: '' }, at: Date.now() });
     if (ports.has(target)) ports.get(target).postMessage(laterToasts.get(target).msg);
@@ -537,8 +602,9 @@ async function upToParent(tab) {
 
 // ---------- palette (Alt+Shift+K) ----------
 const COMMANDS = [
+  ['notes', 'Open its notes in Burrow', (b) => b],
   ['done', 'Understood, go to the next one', (b) => b], ['up', 'Up to the card that needs this', (b, p) => b || p],
-  ['park', 'Park it for later', (b) => b], ['unrelated', 'Not related: remove this page’s card', (b) => b],
+  ['unrelated', 'Not related: remove this page’s card', (b) => b],
   ['capture-page', 'Add this page', (b) => !b], ['undo', 'Undo'], ['redo', 'Redo'],
   ['toggle-breadcrumb', 'Show or hide the breadcrumb'], ['focus', 'Focus mode on or off'], ['open-app', 'Open Burrow'],
 ];
@@ -687,14 +753,14 @@ async function runCommand(name, tab) {
   if (!tab) [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   const tabId = tab && tab.id;
   if (name === 'capture-page') return captureTab(tab);
-  if (name === 'dive') return diveFromSelection(tab);
+  if (name === 'select-card') return cardFromSelection(tab);
+  if (name === 'notes') return notesOf(tab);
   if (name === 'done') return resolveTab(tab, 'done');
-  if (name === 'park') return resolveTab(tab, 'park');
   if (name === 'unrelated') return resolveTab(tab, 'unrelated');
   if (name === 'up') return upToParent(tab);
   if (name === 'palette') return openPalette(tab);
   if (name === 'focus') return setFocus(S.settings.focus === 'off' ? 'hide' : 'off', tab);
-  if (name === 'open-app') return browser.tabs.create({ url: API + '/' });
+  if (name === 'open-app') return openNotes(null, tabId, false);
   if (name === 'undo') return historyStep('undo', tabId);
   if (name === 'redo') return historyStep('redo', tabId);
   if (name === 'toggle-breadcrumb') {
@@ -704,7 +770,20 @@ async function runCommand(name, tab) {
   }
 }
 browser.commands.onCommand.addListener((name) => ready.then(() => runCommand(name)));
-browser.browserAction.onClicked.addListener((tab) => ready.then(() => runCommand('capture-page', tab)));
+
+// ---------- toolbar popup ----------
+async function popupData() {
+  const [tab] = await browser.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+  const b = tab && S.bindings[tab.id], p = tab && S.pending[tab.id];
+  let card = null;
+  if (b && online) { try { card = (await api('/api/card', { cardId: b.cardId })).card; } catch (e) { /* offline */ } }
+  const trail = tab ? viewFor(tab.id).trail : [];
+  return {
+    online, bound: !!b, card, trail, board: lastCrumbs.board, accent: lastCrumbs.accent, settings: S.settings,
+    tab: tab ? { id: tab.id, page: isPage(tab.url), pending: !!p } : null,
+    keys: Object.fromEntries(keymap.map((k) => [k.name, k.shortcut])),
+  };
+}
 
 // ---------- popup prompt (pages without a content script) ----------
 browser.runtime.onMessage.addListener((m, sender) => ready.then(() => {
@@ -712,6 +791,9 @@ browser.runtime.onMessage.addListener((m, sender) => ready.then(() => {
   if (m.t === 'promptAnswer') return answerPrompt(m.tabId, m.choice);
   if (m.t === 'paletteQuery') return paletteItems(m.q, m.tabId != null ? m.tabId : sender.tab && sender.tab.id);
   if (m.t === 'paletteRun') return paletteRun(m.item, m.tabId != null ? m.tabId : sender.tab && sender.tab.id);
+  if (m.t === 'popup') return popupData();
+  if (m.t === 'popupRun') { lastCmd = { name: '', at: 0 }; return browser.tabs.get(m.tabId).catch(() => undefined).then((tab) => runCommand(m.name, tab)); }
+  if (m.t === 'popupNote') return quickNote(m.cardId, m.text, m.tabId);
   return null;
 }));
 browser.windows.onRemoved.addListener((wid) => {
@@ -724,13 +806,13 @@ browser.storage.onChanged.addListener((ch) => {
 });
 
 // ---------- context menus ----------
-browser.contextMenus.create({ id: 'burrow-dive-sel', title: 'Dive into “%s”', contexts: ['selection'] });
+browser.contextMenus.create({ id: 'burrow-sel-card', title: 'Make a card from “%s”', contexts: ['selection'] });
 browser.contextMenus.create({ id: 'burrow-dive-link', title: 'Dive into this link', contexts: ['link'] });
 browser.contextMenus.create({ id: 'burrow-link', title: 'Add link to Burrow', contexts: ['link'] });
 browser.contextMenus.create({ id: 'burrow-page', title: 'Add page to Burrow', contexts: ['page'] });
+browser.contextMenus.create({ id: 'burrow-notes', title: 'Open its notes in Burrow', contexts: ['page'] });
 browser.contextMenus.create({ id: 'burrow-done', title: 'Understood, go to the next one', contexts: ['page'] });
 browser.contextMenus.create({ id: 'burrow-up', title: 'Up to the card that needs this', contexts: ['page'] });
-browser.contextMenus.create({ id: 'burrow-park', title: 'Park it for later', contexts: ['page'] });
 browser.contextMenus.create({ id: 'burrow-unrelated', title: 'Not related (remove from the map)', contexts: ['page'] });
 browser.contextMenus.create({ id: 'burrow-open', title: 'Open Burrow', contexts: ['browser_action'] });
 
@@ -744,13 +826,13 @@ browser.contextMenus.onClicked.addListener((info, tab) => ready.then(() => {
     addPage(null, { url: info.linkUrl, title: vague ? '' : text, parentId: b ? b.cardId : undefined }, tab.id);
   }
   if (info.menuItemId === 'burrow-page') runCommand('capture-page', tab);
-  if (info.menuItemId === 'burrow-dive-sel') diveFromSelection(tab);
+  if (info.menuItemId === 'burrow-sel-card') cardFromSelection(tab, info.selectionText);
+  if (info.menuItemId === 'burrow-notes') runCommand('notes', tab);
   if (info.menuItemId === 'burrow-done') runCommand('done', tab);
   if (info.menuItemId === 'burrow-up') runCommand('up', tab);
-  if (info.menuItemId === 'burrow-park') runCommand('park', tab);
   if (info.menuItemId === 'burrow-unrelated') runCommand('unrelated', tab);
   if (info.menuItemId === 'burrow-dive-link') diveIntoLink(tab, info);
-  if (info.menuItemId === 'burrow-open') browser.tabs.create({ url: API + '/' });
+  if (info.menuItemId === 'burrow-open') openNotes(null, tab && tab.id, false);
 }));
 
 ready.then(() => { connect(); refresh(); });

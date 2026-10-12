@@ -1,4 +1,4 @@
-// Burrow on every page: the breadcrumb pill, the "add this page?" prompt and toasts.
+// Burrow on every page: the breadcrumb pill, the "add this page?" prompt, the "open Burrow?" question and toasts.
 // Everything lives in one closed Shadow DOM so the site's CSS can't touch it (and ours can't leak).
 (() => {
   if (window.top !== window || window.__burrow) return;
@@ -64,6 +64,7 @@
   </style>
   <div class="stack">
     <div class="box" id="prompt" tabindex="-1" hidden></div>
+    <div class="box" id="ask" tabindex="-1" hidden></div>
     <div class="box toast" id="toast" tabindex="-1" hidden></div>
     <div class="crumbs"><div class="ctx" id="ctx" title="Go back to where you dove from"></div><div class="pill" id="pill" hidden></div></div>
   </div>`;
@@ -93,7 +94,8 @@
         const sep = k ? '<span class="sep">/</span>' : '';
         if (!it) return sep + '<span class="more">…</span>';
         const { c, i } = it;
-        return sep + `<button class="seg${i === last ? ' cur' : ''}" data-id="${esc(c.id)}" title="${esc(c.title)}${c.open ? ' (open in a tab)' : c.url ? ' (opens its page)' : ''}">` +
+        const does = c.open ? 'switches to its tab' : c.url ? 'opens its page' : 'shows its notes in Burrow';
+        return sep + `<button class="seg${i === last ? ' cur' : ''}" data-id="${esc(c.id)}" title="${esc(c.title)}\nClick ${does} · Ctrl+click: notes">` +
           `<span class="dot s-${esc(c.status)}${c.open ? ' open' : ''}"></span><span class="t">${esc(c.title || 'Untitled')}</span></button>`;
       }).join('') + (view.bound ? `<span class="depth">· ${view.trail.length} deep</span>` : '');
     pill.hidden = false;
@@ -107,9 +109,10 @@
     } else { ctx.innerHTML = ''; ctx.removeAttribute('data-id'); ctx.style.display = 'none'; }
   }
   $('#ctx').addEventListener('click', () => { const id = $('#ctx').dataset.id; if (id) port.postMessage({ t: 'from', cardId: id }); });
+  // Click goes to the card's tab or page; Ctrl+click opens its notes in Burrow.
   $('#pill').addEventListener('click', (e) => {
     const b = e.target.closest('.seg');
-    if (b) port.postMessage({ t: 'go', cardId: b.dataset.id });
+    if (b) port.postMessage({ t: e.ctrlKey || e.metaKey ? 'notes' : 'go', cardId: b.dataset.id });
   });
   document.addEventListener('fullscreenchange', renderPill);
   matchMedia('(display-mode: fullscreen)').addEventListener('change', renderPill);
@@ -150,6 +153,42 @@
     $('#prompt').classList.add('fading');
     clearTimeout(fadeT);
     fadeT = setTimeout(() => answer('timeout'), 10000);
+  });
+
+  // ---------- one-key questions ("Burrow isn't open. Show it there?") ----------
+  // Takes focus so Enter answers yes and Esc no. Clicking away lets it fade out, which means no.
+  let ask = null, askT = null;
+  function showAsk(m) {
+    ask = m;
+    const box = $('#ask');
+    box.innerHTML = `<div class="q">${esc(m.text)}</div>` +
+      `<div class="keys"><button data-yes="1">${keyHtml('↵')} ${esc(m.yes)}</button><button data-yes="">${keyHtml('Esc')} ${esc(m.no)}</button></div>`;
+    box.hidden = false; box.classList.remove('fading'); box.classList.add('in');
+    clearTimeout(askT);
+    askT = setTimeout(() => answerAsk(false), 15000);
+    box.focus({ preventScroll: true });
+  }
+  function answerAsk(yes) {
+    if (!ask) return;
+    ask = null; clearTimeout(askT);
+    $('#ask').hidden = true;
+    port.postMessage({ t: 'askAnswer', yes });
+  }
+  $('#ask').addEventListener('keydown', (e) => {
+    if (!ask) return;
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); answerAsk(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); answerAsk(false); }
+  });
+  $('#ask').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-yes]');
+    if (b) return answerAsk(!!b.dataset.yes);
+    $('#ask').classList.remove('fading'); $('#ask').focus({ preventScroll: true });
+  });
+  $('#ask').addEventListener('blur', () => {
+    if (!ask) return;
+    $('#ask').classList.add('fading');
+    clearTimeout(askT);
+    askT = setTimeout(() => answerAsk(false), 5000);
   });
 
   // ---------- toasts ----------
@@ -296,6 +335,7 @@
   port.onMessage.addListener((m) => {
     if (m.t === 'view') { view = m; renderPill(); }
     else if (m.t === 'prompt') showPrompt(m);
+    else if (m.t === 'ask') showAsk(m);
     else if (m.t === 'toast') showToast(m);
     else if (m.t === 'restore') restore(m.anchor);
     else if (m.t === 'palette') palette.isOpen ? palette.close() : palette.open();
