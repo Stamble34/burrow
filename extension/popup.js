@@ -6,7 +6,7 @@ const keyHtml = (k) => (k ? String(k).split('+').map((x) => `<kbd>${esc(x)}</kbd
 // Same colors as the app, so a tag looks the same everywhere.
 const TAG_COLORS = ['#b8a4ff', '#7ef0c0', '#ffb48a', '#ff9fc8', '#86d4ff', '#eef08a', '#ff8f8f', '#79e6e6'];
 const tagColor = (t) => { let h = 0; for (const ch of t.toLowerCase()) h = (h * 31 + ch.codePointAt(0)) >>> 0; return TAG_COLORS[h % TAG_COLORS.length]; };
-const ICON = { notes: '▤', done: '✓', up: '↑', unrelated: '×', 'capture-page': '+', palette: '⌕', sidebar: '☰', 'open-app': '↗' };
+const ICON = { 'add-next-to': '⇉', 'capture-loose': '○', notes: '▤', done: '✓', up: '↑', unrelated: '×', 'capture-page': '+', palette: '⌕', sidebar: '☰', 'open-app': '↗' };
 
 let data = null, rows = [], active = -1;
 
@@ -30,16 +30,20 @@ function render() {
     html += `<section class="card">${up.length ? `<div class="trail">${up.map((x) => esc(x.title)).join(' / ')}</div>` : ''}` +
       `<div class="title"><span class="dot s-${esc(c.status)}"></span><span>${esc(c.title)}</span></div>` +
       (c.tags.length ? `<div class="tags">${c.tags.map((t) => `<span class="tag" style="--tag:${tagColor(t)}">${esc(t)}</span>`).join('')}</div>` : '') +
-      (c.note.trim() ? `<div class="preview">${esc(c.note.trim().split('\n').slice(-3).join('\n'))}</div>` : '') +
+      // (No preview when the tab followed a link away: the rows to add that page need the room under 600 px.)
+      (c.note.trim() && !d.tab.navigated ? `<div class="preview">${esc(c.note.trim().split('\n').slice(-3).join('\n'))}</div>` : '') +
       `<textarea id="note" placeholder="Jot a note for “${esc(c.title)}”…"></textarea>` +
       `<div class="note-foot"><span id="hint">${keyHtml('Ctrl+Enter')} adds it to the notes</span><button class="btn" id="add" disabled>Add note</button></div></section>`;
+    // The tab followed a link away from the card's page: that page can be a card of its own.
+    if (d.tab.navigated) items.push(['capture-page', 'This page as a card under it'], ['add-next-to', 'This page as a card next to it'], ['g']);
     items.push(['notes', 'Open the notes in Burrow'], ['done', 'Understood, go to the next one']);
     if (up.length) items.push(['up', `Up to “${up[up.length - 1].title}”`]);
     items.push(['unrelated', 'Not related, remove it']);
   } else if (d.tab && d.tab.page) {
     const target = d.trail[d.trail.length - 1];
     html += `<section class="card"><div class="muted">This page isn’t on the map.</div>${target ? `<div class="trail" style="margin:4px 0 0">Adding goes under “${esc(target.title)}”</div>` : ''}</section>`;
-    items.push(['capture-page', 'Add this page to the map']);
+    items.push(['capture-page', target ? `Add this page under “${target.title}”` : 'Add this page to the map']);
+    if (target) items.push(['add-next-to', `Add it next to “${target.title}”`], ['capture-loose', 'Add it on its own, with no parent']);
   }
   if (items.length) items.push(['g']);
   items.push(['palette', 'Search cards, make one'], ['sidebar', 'Outline in the sidebar'], ['open-app', 'Open Burrow']);

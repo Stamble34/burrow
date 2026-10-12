@@ -637,6 +637,46 @@
     return true;
   }
 
+  // ---------- attach / detach ----------
+  const linksOf = (id) => Object.values(state.links).filter((l) => l.from === id || l.to === id);
+  const linkBetween = (from, to) => Object.values(state.links).find((l) => l.from === from && l.to === to);
+  const named = (id) => `“${(state.cards[id] && state.cards[id].title) || 'Untitled'}”`;
+  function unlink(linkIds, text) {
+    linkIds = linkIds.filter((id) => state.links[id]);
+    if (!linkIds.length) return;
+    commit(linkIds.map((id) => ({ t: 'link.del', id })), { label: text });
+    toast(text, { action: { label: 'Undo', keys: ['Ctrl', 'Z'], run: undo } });
+  }
+  const detachLink = (lid) => { const l = state.links[lid]; if (l) unlink([lid], `${named(l.to)} is no longer under ${named(l.from)}`); };
+  // X: cut a card loose. One link goes straight away; with more, the palette asks which. Several selected
+  // cards keep the links between them and lose the ones to the rest of the map.
+  function detach(ids) {
+    ids = ids.filter((id) => state.cards[id]);
+    if (!ids.length) return;
+    if (ids.length > 1) {
+      const set = new Set(ids);
+      const ls = Object.values(state.links).filter((l) => set.has(l.from) !== set.has(l.to) && (set.has(l.from) || set.has(l.to)));
+      if (!ls.length) return toast('These cards aren’t linked to the rest of the map');
+      return unlink(ls.map((l) => l.id), `Detached ${ids.length} cards from the rest of the map`);
+    }
+    const ls = linksOf(ids[0]);
+    if (!ls.length) return toast(`${named(ids[0])} isn’t linked to anything`);
+    if (ls.length === 1) return detachLink(ls[0].id);
+    openPalette('detach', ids[0]);
+  }
+  // A: put another card under this one (or above it). `move` first cuts the other card from its parents.
+  function attach(id, otherId, where = 'below', move = false) {
+    const [from, to] = where === 'below' ? [id, otherId] : [otherId, id];
+    const cut = move ? linksOf(to).filter((l) => l.to === to).map((l) => ({ t: 'link.del', id: l.id })) : [];
+    if (from === to || linkBetween(from, to)) return toast('Those cards are already linked');
+    if (reachable(to, from)) return toast('That link would make a loop');
+    const text = `${named(to)} is now under ${named(from)}`;
+    commit([...cut, { t: 'link.put', link: { id: S.uid('l_'), boardId: boardId(), from, to } }], { label: text });
+    lastUpFrom.set(to, from);
+    toast(text, { action: { label: 'Undo', keys: ['Ctrl', 'Z'], run: undo } });
+  }
+  function openAttach(id, where = 'below') { if (!state.cards[id]) return; pal.where = where; openPalette('attach', id); }
+
   function openUrl(id) {
     const c = state.cards[id];
     if (!c || !urlOf(c)) return toast('This card has no link');
@@ -1007,7 +1047,9 @@
       { label: 'Understood', icon: '<span class="sdot s-done"></span>', keys: ['3'], run: () => setStatus(ids, 'done') },
       { label: 'Understood, go back up', icon: icon('up'), keys: ['⇧', 'D'], run: doneAndUp, hidden: many },
       { sep: true },
-      { label: 'Link to a prerequisite…', icon: icon('link'), keys: ['L'], run: () => beginLinkMode(id), hidden: many },
+      { label: 'Attach a card…', icon: icon('link'), keys: ['A'], run: () => openAttach(id), hidden: many },
+      { label: many ? 'Detach from the rest' : 'Detach…', icon: icon('x'), keys: ['X'], run: () => detach(ids), hidden: !ids.some((x) => linksOf(x).length) },
+      { label: 'Link to a prerequisite…', keys: ['L'], run: () => beginLinkMode(id), hidden: many },
       { label: 'Tidy this branch', keys: ['T'], run: () => tidy(id), hidden: many },
       { label: many ? `Delete ${ids.length} cards` : 'Delete', danger: true, keys: ['Del'], run: deleteSelection },
     ]);
@@ -1132,13 +1174,15 @@
   // ---------- keyboard ----------
   const SHORTCUTS = [
     ['Build the map', [
-      ['New card', ['N'], 'or double-click the canvas'],
+      ['New card on its own', ['N'], 'or double-click the canvas'],
       ['Add prerequisite to selected card', ['Tab']],
       ['Add another prerequisite next to it', ['Enter']],
       ['Rename card', ['F2']],
       ['Open the card page and notes', ['⇧', 'E'], 'or double-click the card'],
       ['Details sidebar on or off', ['E']],
-      ['Link to a prerequisite', ['L']],
+      ['Attach a card under it', ['A'], '⇧Enter in the list puts it above'],
+      ['Detach from the cards above or below', ['X']],
+      ['Link to a prerequisite with the mouse', ['L']],
       ['Paste links or lines as cards', ['Ctrl', 'V']],
       ['Delete', ['Del']],
     ]],
@@ -1219,6 +1263,8 @@
       case 'D': return doneAndUp();
       case 'w': case 'W': return whatsNext();
       case 'l': case 'L': return p && beginLinkMode(p);
+      case 'a': case 'A': handled(); return p && openAttach(p);
+      case 'x': case 'X': handled(); return detach(ids);
       case 'o': case 'O': return p && openUrl(p);
       case 'f': case 'F': return fitBoard();
       case 'c': case 'C': return p && centerOn(p);
@@ -1295,11 +1341,14 @@
     }
     if (force || act !== dEls.note) dEls.note.value = c.note || '';
     for (const b of dEls.seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.status === c.status);
-    const row = (x) => `<li><button data-id="${x.id}"><span class="sdot s-${x.status}"></span>${esc(x.title || 'Untitled')}</button></li>`;
+    const row = (x, lid) => `<li><button data-id="${x.id}"><span class="sdot s-${x.status}"></span>${esc(x.title || 'Untitled')}</button>` +
+      `<button class="icon-btn d-unlink" data-unlink="${lid}" title="Detach">${icon('x')}</button></li>`;
     const ks = kidsOf(c.id), ps = parsOf(c.id);
     const sibs = siblingsOf(c).sort((a, z) => state.boards[a.boardId].createdAt - state.boards[z.boardId].createdAt);
     const also = sibs.map((o) => `<li><button data-jump="${o.id}"><span class="sdot s-${o.status}"></span>${esc(state.boards[o.boardId].name)}</button></li>`).join('');
-    dEls.rel.innerHTML = (sibs.length ? `<h3>Also on</h3><ul>${also}</ul>` : '') + (ks.length ? `<h3>Needs first</h3><ul>${ks.map(row).join('')}</ul>` : '') + (ps.length ? `<h3>Needed for</h3><ul>${ps.map(row).join('')}</ul>` : '');
+    dEls.rel.innerHTML = (sibs.length ? `<h3>Also on</h3><ul>${also}</ul>` : '') + (ks.length ? `<h3>Needs first</h3><ul>${ks.map((k) => row(k, linkBetween(c.id, k.id).id)).join('')}</ul>` : '') +
+      (ps.length ? `<h3>Needed for</h3><ul>${ps.map((x) => row(x, linkBetween(x.id, c.id).id)).join('')}</ul>` : '') +
+      `<button class="d-attach" data-attach="below">${icon('plus')}Attach a card<span class="m-keys">${keysHtml(['A'])}</span></button>`;
   }
   const patchDetails = (field, value, key) => {
     const c = state.cards[detailsId]; if (!c || c[field] === value) return;
@@ -1319,7 +1368,10 @@
   });
   dEls.note.addEventListener('input', () => patchDetails('note', dEls.note.value, 'note:' + detailsId));
   dEls.seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && detailsId) setStatus([detailsId], b.dataset.status); });
-  dEls.rel.addEventListener('click', (e) => { const j = e.target.closest('button[data-jump]'); if (j) return jumpToCard(j.dataset.jump); const b = e.target.closest('button[data-id]'); if (b) { selectOnly(b.dataset.id); openDetails(b.dataset.id); centerOn(b.dataset.id); } });
+  dEls.rel.addEventListener('click', (e) => {
+    const u = e.target.closest('[data-unlink]'); if (u) return detachLink(u.dataset.unlink);
+    if (e.target.closest('[data-attach]')) return openAttach(detailsId);
+    const j = e.target.closest('button[data-jump]'); if (j) return jumpToCard(j.dataset.jump); const b = e.target.closest('button[data-id]'); if (b) { selectOnly(b.dataset.id); openDetails(b.dataset.id); centerOn(b.dataset.id); } });
   $('#detailsClose').addEventListener('click', closeDetails);
   $('#dOpen').addEventListener('click', () => detailsId && openUrl(detailsId));
   $('#detailsPage').addEventListener('click', () => detailsId && openPage(detailsId));
@@ -1413,7 +1465,9 @@
     const focused = document.activeElement === tagInput ? tagInput : document.activeElement === srcInput ? srcInput : null;
     const sel = focused && [focused.selectionStart, focused.selectionEnd];
     const row = (ic, label, v) => `<div class="prop"><div class="prop-k">${icon(ic)}<span>${label}</span></div><div class="prop-v">${v}</div></div>`;
-    const chip = (x) => `<button class="pchip" data-page="${x.id}" title="Open its page"><span class="sdot s-${x.status}"></span><span class="t">${esc(x.title || 'Untitled')}</span></button>`;
+    const chip = (x, lid) => `<button class="pchip" data-page="${x.id}" title="Open its page"><span class="sdot s-${x.status}"></span><span class="t">${esc(x.title || 'Untitled')}</span>` +
+      `<span class="pchip-x" data-unlink="${lid}" title="Detach">${icon('x')}</span></button>`;
+    const add = (where) => `<button class="pchip padd" data-attach="${where}" title="Attach a card ${where === 'below' ? 'under' : 'above'} this one">${icon('plus')}<span class="t">Add</span></button>`;
     const tags = c.tags || [];
     let html = row('target', 'Status', `<div class="seg pseg">${S.STATUSES.map((st) => `<button data-status="${st}" class="${c.status === st ? 'on' : ''}"><span class="sdot s-${st}"></span>${STATUS_LABEL[st]}</button>`).join('')}</div>`);
     html += row('tag', 'Tags', `<div class="tags-edit">${tags.map((t) => tagHtml(t, true)).join('')}<span data-slot="tag"></span></div>`);
@@ -1425,8 +1479,8 @@
       html += row('quote', 'From', `<a class="pctx"${ctx.fromUrl ? ` href="${esc(ctx.fromUrl)}" target="_blank" rel="noopener" title="Back to the sentence on the page"` : ''}>${from ? `<b>${esc(from.title)}</b> · ` : ''}<q>${esc(ctx.text)}</q></a>`);
     }
     const ks = kidsOf(c.id), ps = parsOf(c.id), sibs = siblingsOf(c);
-    if (ks.length) html += row('down', 'Needs first', ks.map(chip).join(''));
-    if (ps.length) html += row('up', 'Needed for', ps.map(chip).join(''));
+    html += row('down', 'Needs first', ks.map((k) => chip(k, linkBetween(c.id, k.id).id)).join('') + add('below'));
+    html += row('up', 'Needed for', ps.map((x) => chip(x, linkBetween(x.id, c.id).id)).join('') + add('above'));
     if (sibs.length) html += row('link', 'Also on', sibs.map((o) => `<button class="pchip" data-page="${o.id}">${icon('board')}<span class="t">${esc(state.boards[o.boardId].name)}</span></button>`).join(''));
     const dates = [c.createdAt ? `Added ${day(c.createdAt)}` : '', c.status === 'done' && c.doneAt ? `understood ${day(c.doneAt)}` : ''].filter(Boolean).join(', ');
     if (dates) html += row('calendar', 'Dates', `<span class="pdates">${dates}</span>`);
@@ -1504,6 +1558,8 @@
     const tg = e.target.closest('.tag[data-tag]'); if (tg) return openPalette('all', undefined, '#' + tg.dataset.tag);
     const d = e.target.closest('[data-drop]');
     if (d) { const c = state.cards[pg.id]; return patchPage({ urls: c.urls.filter((u, i) => i !== +d.dataset.drop) }, { label: `Removed a source from “${c.title}”` }); }
+    const u = e.target.closest('[data-unlink]'); if (u) return detachLink(u.dataset.unlink);
+    const at = e.target.closest('[data-attach]'); if (at) return openAttach(pg.id, at.dataset.attach);
     const to = e.target.closest('[data-page]'); if (to) return openPage(to.dataset.page);
     if (e.target.closest('.tags-edit')) tagInput.focus();
   });
@@ -1988,8 +2044,10 @@
   function commands() {
     const p = primary(); const c = p && state.cards[p];
     const list = [
-      { label: 'New card', keys: ['N'], run: newCardHere },
+      { label: 'New card on its own', sub: 'no parent', keys: ['N'], run: newCardHere },
       { label: 'Add prerequisite', sub: c ? `under “${c.title}”` : '', keys: ['Tab'], run: () => addPrerequisite(p), when: !!c },
+      { label: 'Attach a card', sub: c ? `under or above “${c.title}”` : '', keys: ['A'], run: () => setTimeout(() => openAttach(p), 0), when: !!c },
+      { label: 'Detach', sub: c ? `cut “${c.title}” from the cards it’s linked to` : '', keys: ['X'], run: () => detach([...selected]), when: !!(c && linksOf(p).length) },
       { label: 'Mark as understood', keys: ['D'], run: () => setStatus([...selected], 'done'), when: !!c },
       { label: 'Mark as learning', keys: ['2'], run: () => setStatus([...selected], 'doing'), when: !!c },
       { label: 'Mark as to learn', keys: ['1'], run: () => setStatus([...selected], 'todo'), when: !!c },
@@ -2042,6 +2100,25 @@
     } else if (pal.mode === 'renameboard') {
       const id = pal.renameId; const b = state.boards[id];
       groups.push(['', [{ label: raw ? `Rename to “${raw}”` : 'Type a new name for the board', sub: b ? `now “${b.name}”` : '', keys: ['Enter'], icon: icon('board'), run: () => raw && renameBoard(id, raw) }]]);
+    } else if (pal.mode === 'attach' && state.cards[pal.renameId]) {
+      // Enter puts the card on the side the list was opened for, ⇧Enter on the other, Ctrl+Enter moves it there.
+      const id = pal.renameId, c = state.cards[id], below = pal.where !== 'above';
+      const linked = new Set(linksOf(id).flatMap((l) => [l.from, l.to]));
+      const under = (x) => { const up = parsOf(x.id); return up.length ? `under “${up[0].title}”${up.length > 1 ? ` +${up.length - 1}` : ''}` : 'on its own'; };
+      const cs = cardsOn().filter((x) => x.id !== id && !linked.has(x.id)).map((x) => ({ x, s: q ? score(x.title, q) : 1 })).filter((v) => v.s > 0)
+        .sort((a, z) => z.s - a.s || z.x.createdAt - a.x.createdAt).slice(0, 40)
+        .map(({ x }) => ({ label: x.title || 'Untitled', html: highlight(x.title || 'Untitled', q), icon: statusIcon(x.status), sub: under(x),
+          run: () => attach(id, x.id, below ? 'below' : 'above'), shift: () => attach(id, x.id, below ? 'above' : 'below'), ctrl: () => attach(id, x.id, below ? 'below' : 'above', true) }));
+      groups.push([`${below ? 'Under' : 'Above'} “${c.title}” · ⇧Enter ${below ? 'above' : 'under'} it · Ctrl+Enter moves it`, cs]);
+      if (raw) groups.push(['', [{ label: `New card “${raw}” ${below ? 'under' : 'above'} “${c.title}”`, icon: icon('plus'), run: () => newAttached(id, raw, below) }]]);
+    } else if (pal.mode === 'detach' && state.cards[pal.renameId]) {
+      const id = pal.renameId, c = state.cards[id];
+      const ls = linksOf(id).sort((a, z) => (z.to === id) - (a.to === id));
+      const items = ls.map((l) => { const up = l.to === id, o = state.cards[up ? l.from : l.to];
+        return { label: o.title || 'Untitled', html: highlight(o.title || 'Untitled', q), icon: icon(up ? 'up' : 'down'), sub: up ? 'above it' : 'below it', run: () => detachLink(l.id) }; })
+        .filter((it) => !q || score(it.label, q) > 0);
+      groups.push([`Cut “${c.title}” from`, items]);
+      if (ls.length > 1 && !q) groups.push(['', [{ label: 'All of them', sub: `${ls.length} links`, icon: icon('x'), run: () => unlink(ls.map((l) => l.id), `“${c.title}” is on its own now`) }]]);
     } else if (pal.mode === 'boards') {
       const bs = Object.values(state.boards).map((b) => ({ b, s: score(b.name, q) })).filter((x) => x.s > 0).sort((a, z) => z.s - a.s || a.b.createdAt - z.b.createdAt);
       groups.push(['Boards', bs.map(({ b }) => boardItem(b, q))]);
@@ -2060,6 +2137,7 @@
         const p = primary();
         if (tq == null) cs.push({ kind: 'create', label: p ? `Add “${raw}” as a prerequisite` : `Create card “${raw}”`, icon: icon('plus'),
           sub: p ? `under “${state.cards[p].title}”` : '', run: () => createFromPalette(raw) });
+        if (tq == null && p) cs.push({ kind: 'create', label: `Create card “${raw}” on its own`, icon: icon('plus'), sub: 'no parent', run: () => createFromPalette(raw, true) });
         groups.push(['Cards', cs]);
         const bs = Object.values(state.boards).filter((b) => score(b.name, q) > 0).slice(0, 4).map((b) => boardItem(b, q));
         if (bs.length) groups.push(['Boards', bs]);
@@ -2106,9 +2184,10 @@
     pal.overlay.hidden = false;
     const renaming = mode === 'renameboard' && state.boards[renameId];
     pal.input.value = renaming ? renaming.name : text;
-    pal.input.placeholder = mode === 'boards' ? 'Find or create a board' : mode === 'newboard' ? 'Name the new board' : mode === 'renameboard' ? 'New board name' : 'Search cards, boards and commands';
+    pal.input.placeholder = mode === 'attach' ? 'Find a card to attach, or type a new one' : mode === 'detach' ? 'Which link to cut?' : mode === 'boards' ? 'Find or create a board' : mode === 'newboard' ? 'Name the new board' : mode === 'renameboard' ? 'New board name' : 'Search cards, boards and commands';
+    $('#paletteEnter').textContent = mode === 'attach' ? 'Attach' : mode === 'detach' ? 'Cut' : 'Open';
     pal.scope.hidden = mode === 'all';
-    pal.scope.textContent = mode === 'boards' ? 'Boards' : mode === 'newboard' ? 'New board' : mode === 'renameboard' ? 'Rename board' : '';
+    pal.scope.textContent = mode === 'attach' ? 'Attach' : mode === 'detach' ? 'Detach' : mode === 'boards' ? 'Boards' : mode === 'newboard' ? 'New board' : mode === 'renameboard' ? 'Rename board' : '';
     buildPalette();
     pal.input.focus();
     if (renaming) pal.input.select();
@@ -2119,14 +2198,21 @@
   pal.input.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown' || (keyOf(e) === 'n' && e.ctrlKey)) { e.preventDefault(); pal.active = Math.min(pal.items.length - 1, pal.active + 1); paintActive(); }
     else if (e.key === 'ArrowUp' || (keyOf(e) === 'p' && e.ctrlKey)) { e.preventDefault(); pal.active = Math.max(0, pal.active - 1); paintActive(); }
-    else if (e.key === 'Enter') { e.preventDefault(); const it = pal.items[pal.active]; closePalette(); if (it) it.run(); }
+    else if (e.key === 'Enter') { e.preventDefault(); const it = pal.items[pal.active]; closePalette(); if (it) runItem(it, e); }
     else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
     else if (e.key === 'F2' && pal.mode !== 'renameboard') { e.preventDefault(); const it = pal.items[pal.active]; openPalette('renameboard', it && it.kind === 'board' ? it.boardId : boardId()); }
     else if (e.key === 'Backspace' && !pal.input.value && pal.mode !== 'all') { pal.mode = 'all'; pal.scope.hidden = true; pal.input.placeholder = 'Search cards, boards and commands'; buildPalette(); }
     e.stopPropagation();
   });
   pal.list.addEventListener('mousemove', (e) => { const n = e.target.closest('.p-item'); if (n && +n.dataset.i !== pal.active) { pal.active = +n.dataset.i; paintActive(); } });
-  pal.list.addEventListener('click', (e) => { const n = e.target.closest('.p-item'); if (!n) return; const it = pal.items[+n.dataset.i]; closePalette(); it.run(); });
+  pal.list.addEventListener('click', (e) => { const n = e.target.closest('.p-item'); if (!n) return; const it = pal.items[+n.dataset.i]; closePalette(); runItem(it, e); });
+  const runItem = (it, e) => ((e.shiftKey && it.shift) || ((e.ctrlKey || e.metaKey) && it.ctrl) || it.run)();
+  function newAttached(id, title, below) {
+    const c = state.cards[id];
+    if (below) return createCard({ ...spotForChild(c), title, parentId: id, editNow: false });
+    const n = createCard({ ...freeSpot(c.x, c.y - 150), title, editNow: false });
+    if (n) { commit([{ t: 'link.put', link: { id: S.uid('l_'), boardId: boardId(), from: n.id, to: id } }], { coalesce: 'new:' + n.id }); lastUpFrom.set(id, n.id); }
+  }
   pal.overlay.addEventListener('pointerdown', (e) => { if (e.target === pal.overlay) closePalette(); });
 
   function jumpToCard(id) {
@@ -2161,8 +2247,8 @@
     toast(`${ids.length === 1 ? '1 topic here is' : ids.length + ' topics here are'} also on other boards`, { action: { label: 'Link them', run: mergeRepeated }, ms: 9000 });
   }
 
-  function createFromPalette(title) {
-    const p = primary();
+  function createFromPalette(title, loose) {
+    const p = loose ? null : primary();
     if (p && state.cards[p]) { const s = spotForChild(state.cards[p]); createCard({ ...s, title, parentId: p, editNow: false }); }
     else { const w = toWorld(innerWidth / 2, innerHeight / 2); createCard({ ...freeSpot(w.x - CARD_W / 2, w.y - 22), title, editNow: false }); }
   }

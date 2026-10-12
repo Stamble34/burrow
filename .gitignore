@@ -18,4 +18,4 @@ Thumbs.db
 # extension build output
 extension/web-ext-artifacts/
 *.xpi
-extension/.amo-upload-uuid
+.amo-upload-uuid

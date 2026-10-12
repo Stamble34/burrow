@@ -178,35 +178,57 @@ async function answerPrompt(tabId, choice) {
   if (info.popupWindowId != null) browser.windows.remove(info.popupWindowId).catch(() => {});
   // Ignored: never ask again (asked stays set), but keep the parent for a later capture shortcut.
   if (choice !== 'child' && choice !== 'sibling') return;
-  await addPage(tabId, { url: info.url, title: info.title, parentId: info.parentId, sibling: choice === 'sibling' });
+  await addPage(tabId, { url: info.url, title: info.title, parentId: info.parentId, how: choice });
 }
 
 // ---------- adding pages ----------
 // tabId: the tab showing this page, which becomes bound to the card (null for a link that isn't open).
-async function addPage(tabId, { url, title, parentId, sibling, exactTitle }, toastTab = tabId) {
+// how: 'child' (under parentId), 'sibling' (next to parentId, under its parent on the breadcrumb) or
+// 'loose' (on the board with no parent). moveFrom: the card this tab was bound to, which gives the page up.
+async function addPage(tabId, { url, title, parentId, how = 'child', exactTitle, moveFrom }, toastTab = tabId) {
   let r;
+  const effects = tabId == null ? [] : moveFrom ? [{ kind: 'unbind', tabId, cardId: moveFrom }, { kind: 'bind', tabId }] : [{ kind: 'bind', tabId }];
   try {
-    r = await api('/api/capture', { url, title, parentId, sibling, exactTitle, effects: tabId != null ? [{ kind: 'bind', tabId }] : [] });
+    r = await api('/api/capture', { url, title, parentId, sibling: how === 'sibling', loose: how === 'loose', prefer: S.prefer, moveFrom, exactTitle, effects });
   } catch (e) { return offline(toastTab); }
   if (tabId != null) {
     if (r.parent) S.prefer[r.card.id] = r.parent.id;
     bind(tabId, r.card.id, url, !r.existing);
-  }
-  const text = r.existing ? `“${r.card.title}” is already on the map${r.parent ? ` (now under “${r.parent.title}”)` : ''}`
-    : `Added “${r.card.title}”${r.parent ? ` under “${r.parent.title}”` : ` to ${r.board.name}`}${r.known ? ` · known from ${r.known}` : ''}`;
-  toast(toastTab, text, !!r.entry);
+  } else refresh();
+  toast(toastTab, addedText(r), !!r.entry);
   return r;
 }
 
-async function captureTab(tab) {
+function addedText(r) {
+  if (r.existing) return `“${r.card.title}” is already on the map${r.parent ? ` (now under “${r.parent.title}”)` : ''}`;
+  return `Added “${r.card.title}”${r.parent ? ` under “${r.parent.title}”` : ` to ${r.board.name}${r.loose ? ' on its own' : ''}`}${r.known ? ` · known from ${r.known}` : ''}`;
+}
+
+// The card's own page, from the breadcrumb ('' when it has none yet).
+const ownUrl = (cardId) => ((lastCrumbs.trails[cardId] || []).slice(-1)[0] || {}).url || '';
+
+async function captureTab(tab, how = 'child') {
   if (!tab) return;
   if (!isPage(tab.url)) return toast(tab.id, 'Only web pages and files can be added');
   const b = S.bindings[tab.id];
-  if (b) return toast(tab.id, `This tab is already “${(lastCrumbs.trails[b.cardId] || []).slice(-1)[0]?.title || 'on the map'}”`);
-  // An ignored tab opened from a card still goes under that card; otherwise under the capture target.
+  if (b) {
+    // A bound tab that followed a link: the page you're on can become a card of its own.
+    const own = ownUrl(b.cardId);
+    if (!own || sameUrl(own, tab.url)) return toast(tab.id, how === 'sibling' ? `This tab is “${cardTitle(b.cardId)}”. Select words to add them next to it.` : `This tab is already “${cardTitle(b.cardId)}”`);
+    return addPage(tab.id, { url: tab.url, title: tab.title, parentId: b.cardId, how, moveFrom: b.cardId });
+  }
+  // An ignored tab opened from a card still goes under (or next to) that card; otherwise the capture target.
   const p = S.pending[tab.id];
   prompts.delete(tab.id);
-  await addPage(tab.id, { url: tab.url, title: tab.title, parentId: p ? p.parentId : undefined });
+  await addPage(tab.id, { url: tab.url, title: tab.title, parentId: p ? p.parentId : undefined, how });
+}
+
+// Alt+Shift+A: next to this tab's card instead of under it. The selected words if there are any, else the page.
+async function addNextTo(tab) {
+  if (!tab) return;
+  const g = await browser.tabs.sendMessage(tab.id, { t: 'grab', kind: 'selection' }).catch(() => null);
+  if (g && g.text) return cardFromSelection(tab, null, 'sibling', g);
+  return captureTab(tab, 'sibling');
 }
 
 // ---------- undo / redo ----------
@@ -486,20 +508,18 @@ async function dive(tab, { title, url, context }) {
 
 // The card keeps the sentence the words came from ("From …" on its page and in the breadcrumb).
 // `fallback`: the selection the context menu saw, for pages without a content script.
-async function cardFromSelection(tab, fallback) {
+async function cardFromSelection(tab, fallback, how = 'child', grabbed) {
   if (!tab) return;
-  const g = await browser.tabs.sendMessage(tab.id, { t: 'grab', kind: 'selection' }).catch(() => null);
+  const g = grabbed || await browser.tabs.sendMessage(tab.id, { t: 'grab', kind: 'selection' }).catch(() => null);
   const text = (g && g.text) || String(fallback || '').replace(/\s+/g, ' ').trim();
   if (!text) return toast(tab.id, 'Select some words to make a card of them');
   let r;
   try {
-    r = await api('/api/capture', { title: text.slice(0, 120), exactTitle: true, parentId: parentFor(tab),
+    r = await api('/api/capture', { title: text.slice(0, 120), exactTitle: true, parentId: parentFor(tab), sibling: how === 'sibling', loose: how === 'loose', prefer: S.prefer,
       context: g && g.text ? { text: g.sentence, quote: g.text, fromUrl: g.fragmentUrl } : null });
   } catch (e) { return offline(tab.id); }
   if (r.parent) S.prefer[r.card.id] = r.parent.id;
-  const text2 = r.existing ? `“${r.card.title}” is already on the map`
-    : `Added “${r.card.title}”${r.parent ? ` under “${r.parent.title}”` : ` to ${r.board.name}`}${r.known ? ` · known from ${r.known}` : ''}`;
-  toast(tab.id, text2, !!r.entry);
+  toast(tab.id, addedText(r), !!r.entry);
   refresh();
 }
 
@@ -605,7 +625,8 @@ const COMMANDS = [
   ['notes', 'Open its notes in Burrow', (b) => b],
   ['done', 'Understood, go to the next one', (b) => b], ['up', 'Up to the card that needs this', (b, p) => b || p],
   ['unrelated', 'Not related: remove this page’s card', (b) => b],
-  ['capture-page', 'Add this page', (b) => !b], ['undo', 'Undo'], ['redo', 'Redo'],
+  ['capture-page', 'Add this page', (b) => !b], ['add-next-to', 'Add next to the card, not under it'],
+  ['capture-loose', 'Add this page on its own, with no parent'], ['undo', 'Undo'], ['redo', 'Redo'],
   ['toggle-breadcrumb', 'Show or hide the breadcrumb'], ['focus', 'Focus mode on or off'], ['open-app', 'Open Burrow'],
 ];
 
@@ -629,6 +650,7 @@ async function paletteItems(q, tabId) {
     const p = parentId && Object.values(lastCrumbs.trails).flat().find((c) => c.id === parentId);
     const target = p ? p.title : (lastCrumbs.focus.slice(-1)[0] || {}).title;
     items.push({ kind: 'create', group: 'Make a card', title: q, label: `“${q}”`, sub: target ? `under “${target}”` : '' });
+    if (target) items.push({ kind: 'create', loose: true, group: 'Make a card', title: q, label: `“${q}”`, sub: 'on its own, with no parent' });
   }
   const b = tab && S.bindings[tab.id], pend = tab && S.pending[tab.id];
   const ql = q.toLowerCase();
@@ -643,7 +665,7 @@ async function paletteItems(q, tabId) {
 async function paletteRun(item, tabId) {
   const tab = tabId != null ? await browser.tabs.get(tabId).catch(() => null) : null;
   if (item.kind === 'card') return goTo(item.id, tabId, { id: item.id, title: item.label, url: item.url });
-  if (item.kind === 'create') return addPage(null, { title: item.title, parentId: tab ? parentFor(tab) : undefined, exactTitle: true }, tabId);
+  if (item.kind === 'create') return addPage(null, { title: item.title, parentId: tab ? parentFor(tab) : undefined, how: item.loose ? 'loose' : 'child', exactTitle: true }, tabId);
   if (item.kind === 'cmd') { lastCmd = { name: '', at: 0 }; return runCommand(item.name, tab); }
 }
 
@@ -753,6 +775,8 @@ async function runCommand(name, tab) {
   if (!tab) [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   const tabId = tab && tab.id;
   if (name === 'capture-page') return captureTab(tab);
+  if (name === 'add-next-to') return addNextTo(tab);
+  if (name === 'capture-loose') return captureTab(tab, 'loose');
   if (name === 'select-card') return cardFromSelection(tab);
   if (name === 'notes') return notesOf(tab);
   if (name === 'done') return resolveTab(tab, 'done');
@@ -780,7 +804,7 @@ async function popupData() {
   const trail = tab ? viewFor(tab.id).trail : [];
   return {
     online, bound: !!b, card, trail, board: lastCrumbs.board, accent: lastCrumbs.accent, settings: S.settings,
-    tab: tab ? { id: tab.id, page: isPage(tab.url), pending: !!p } : null,
+    tab: tab ? { id: tab.id, page: isPage(tab.url), pending: !!p, navigated: !!(b && ownUrl(b.cardId) && !sameUrl(ownUrl(b.cardId), tab.url)) } : null,
     keys: Object.fromEntries(keymap.map((k) => [k.name, k.shortcut])),
   };
 }
@@ -809,7 +833,10 @@ browser.storage.onChanged.addListener((ch) => {
 browser.contextMenus.create({ id: 'burrow-sel-card', title: 'Make a card from “%s”', contexts: ['selection'] });
 browser.contextMenus.create({ id: 'burrow-dive-link', title: 'Dive into this link', contexts: ['link'] });
 browser.contextMenus.create({ id: 'burrow-link', title: 'Add link to Burrow', contexts: ['link'] });
+browser.contextMenus.create({ id: 'burrow-sel-next', title: 'Make a card from “%s” next to this one', contexts: ['selection'] });
 browser.contextMenus.create({ id: 'burrow-page', title: 'Add page to Burrow', contexts: ['page'] });
+browser.contextMenus.create({ id: 'burrow-page-next', title: 'Add page next to this card', contexts: ['page'] });
+browser.contextMenus.create({ id: 'burrow-page-loose', title: 'Add page on its own (no parent)', contexts: ['page'] });
 browser.contextMenus.create({ id: 'burrow-notes', title: 'Open its notes in Burrow', contexts: ['page'] });
 browser.contextMenus.create({ id: 'burrow-done', title: 'Understood, go to the next one', contexts: ['page'] });
 browser.contextMenus.create({ id: 'burrow-up', title: 'Up to the card that needs this', contexts: ['page'] });
@@ -827,6 +854,9 @@ browser.contextMenus.onClicked.addListener((info, tab) => ready.then(() => {
   }
   if (info.menuItemId === 'burrow-page') runCommand('capture-page', tab);
   if (info.menuItemId === 'burrow-sel-card') cardFromSelection(tab, info.selectionText);
+  if (info.menuItemId === 'burrow-sel-next') cardFromSelection(tab, info.selectionText, 'sibling');
+  if (info.menuItemId === 'burrow-page-next') captureTab(tab, 'sibling');
+  if (info.menuItemId === 'burrow-page-loose') captureTab(tab, 'loose');
   if (info.menuItemId === 'burrow-notes') runCommand('notes', tab);
   if (info.menuItemId === 'burrow-done') runCommand('done', tab);
   if (info.menuItemId === 'burrow-up') runCommand('up', tab);

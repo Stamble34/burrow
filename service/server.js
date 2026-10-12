@@ -249,9 +249,9 @@ function boardCards(boardId) {
   return Object.values(state.cards).filter(c => c.boardId === boardId);
 }
 
-function cardOnBoardWithUrl(boardId, url) {
+function cardOnBoardWithUrl(boardId, url, except) {
   const k = shared.urlKey(url);
-  return k ? boardCards(boardId).find(c => (c.urls || []).some(u => shared.urlKey(u.url) === k)) : null;
+  return k ? boardCards(boardId).find(c => c.id !== except && (c.urls || []).some(u => shared.urlKey(u.url) === k)) : null;
 }
 
 function spotUnder(parent, cards) {
@@ -264,21 +264,23 @@ function spotUnder(parent, cards) {
 }
 
 // Where a page goes: under `parentId` (a card bound to the tab it was opened from), next to it with
-// `sibling`, or by default under the capture target of the active board.
-function placement({ parentId, sibling, boardId }) {
+// `sibling` (under its parent on the breadcrumb, `prefer`), on its own with `loose`, or by default under
+// the capture target of the active board.
+function placement({ parentId, sibling, boardId, loose, prefer }) {
   let parent = parentId && state.cards[parentId] ? state.cards[parentId] : null;
   let bId = parent ? parent.boardId : (state.boards[boardId] ? boardId : state.settings.activeBoardId);
+  if (loose) return { parent: null, anchor: parent, loose: true, boardId: bId, board: state.boards[bId] };
   if (!parent && !parentId) {
     const b = state.boards[bId];
     parent = b && b.focusId && state.cards[b.focusId] ? state.cards[b.focusId] : null;
   }
   const anchor = parent;
-  if (sibling && parent) parent = shared.parentsOf(state, parent.id)[0] || null;
+  if (sibling && parent) { const t = shared.trailOf(state, parent.id, prefer); parent = t.length > 1 ? t[t.length - 2] : null; }
   return { parent, anchor, boardId: bId, board: state.boards[bId] };
 }
 
-function preview({ url, title, parentId, sibling }) {
-  const { parent, board } = placement({ parentId, sibling });
+function preview({ url, title, parentId, sibling, loose, prefer }) {
+  const { parent, board } = placement({ parentId, sibling, loose, prefer });
   const existing = url ? cardOnBoardWithUrl(board.id, url) : null;
   const t = shared.titleCase(shared.cleanTitle(title || '', url));
   const known = existing ? null : shared.findConcept(state, { title: t, url }, board.id);
@@ -296,19 +298,26 @@ function preview({ url, title, parentId, sibling }) {
 
 // context: where a dive came from, { text: the sentence, quote: the selected words, fromCardId, fromUrl (with #:~:text=) }.
 // exactTitle: use `title` as typed (a selection) instead of cleaning it like a page title.
-async function capture({ url, title, note, boardId, parentId, sibling, effects, label, clientId, context, exactTitle }) {
+// moveFrom: a card that took this page as a source (same-tab navigation) gives it up to the new card.
+async function capture({ url, title, note, boardId, parentId, sibling, loose, prefer, moveFrom, effects, label, clientId, context, exactTitle }) {
   url = String(url || '').trim();
   let rawTitle = String(title || '').trim();
   if (!rawTitle && url) rawTitle = (await fetchTitle(url)) || '';
-  const { parent, anchor, board } = placement({ parentId, sibling, boardId });
+  const { parent, anchor, board } = placement({ parentId, sibling, boardId, loose, prefer });
   const bId = board.id;
   const cards = boardCards(bId);
   const ops = [];
+  const from = moveFrom && state.cards[moveFrom];
+  if (from && url) {
+    const k = shared.urlKey(url);
+    const urls = (from.urls || []).filter((u, i) => i === 0 || shared.urlKey(u.url) !== k);
+    if (urls.length !== (from.urls || []).length) ops.push({ t: 'card.put', card: { id: from.id, boardId: from.boardId, urls } });
+  }
 
   const withCard = (id) => (effects || []).map(fx => (fx.kind === 'bind' && !fx.cardId ? { ...fx, cardId: id } : fx));
 
   // Same page already on this board: just make sure it hangs under the parent.
-  const existing = url ? cardOnBoardWithUrl(bId, url) : null;
+  const existing = url ? cardOnBoardWithUrl(bId, url, from && from.id) : null;
   if (existing) {
     effects = withCard(existing.id);
     if (parent && parent.id !== existing.id && !Object.values(state.links).some(l => l.from === parent.id && l.to === existing.id)) {
@@ -320,6 +329,7 @@ async function capture({ url, title, note, boardId, parentId, sibling, effects, 
 
   let spot = spotUnder(parent, cards);
   if (sibling && anchor && !parent) spot = { x: anchor.x + CARD_W + 24, y: anchor.y };
+  if (loose) spot = spotUnder(null, cards);
   const card = {
     id: shared.uid('c_'), boardId: bId, title: shared.titleCase(exactTitle && rawTitle ? rawTitle.replace(/\s+/g, ' ').trim().slice(0, 200) : shared.cleanTitle(rawTitle, url)),
     urls: url ? [{ url, title: rawTitle, visitedAt: Date.now() }] : [],
@@ -328,7 +338,7 @@ async function capture({ url, title, note, boardId, parentId, sibling, effects, 
   if (context && typeof context === 'object') {
     card.context = {
       text: String(context.text || '').slice(0, 600), quote: String(context.quote || '').slice(0, 300),
-      fromCardId: state.cards[context.fromCardId] ? context.fromCardId : (parent ? parent.id : null), fromUrl: String(context.fromUrl || '').slice(0, 2000),
+      fromCardId: state.cards[context.fromCardId] ? context.fromCardId : ((anchor || parent) ? (anchor || parent).id : null), fromUrl: String(context.fromUrl || '').slice(0, 2000),
     };
   }
   ops.push({ t: 'card.put', card });
@@ -340,7 +350,7 @@ async function capture({ url, title, note, boardId, parentId, sibling, effects, 
   const entry = record(ops, {
     label: label || `Added “${card.title}”${parent ? ` under “${parent.title}”` : ''}`, effects, source: 'browser', clientId,
   });
-  return { card: state.cards[card.id] || card, parent, existing: false, board, known: known ? state.boards[known.boardId].name : null, entry };
+  return { card: state.cards[card.id] || card, parent, existing: false, board, loose: !!loose, known: known ? state.boards[known.boardId].name : null, entry };
 }
 
 // Same-tab navigation: the page becomes another source of the card. Not an undo step.
@@ -710,7 +720,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, {
         ok: true, existing: r.existing, board: { id: r.board.id, name: r.board.name },
         card: { id: r.card.id, title: r.card.title, status: r.card.status },
-        parent: r.parent ? { id: r.parent.id, title: r.parent.title } : null,
+        parent: r.parent ? { id: r.parent.id, title: r.parent.title } : null, loose: !!r.loose,
         known: r.known || null, entry: r.entry ? entrySummary(r.entry) : null,
       }, cors);
     }

@@ -64,7 +64,7 @@ Notes and tags belong to the concept, so a card that is on several boards has th
 
 | | |
 |---|---|
-| `N` / double-click | New card |
+| `N` / double-click | New card on its own (no parent) |
 | `Tab` | Add a prerequisite to the selected card (also works while typing a title) |
 | `Enter` | Add another prerequisite next to the selected one |
 | `F2` | Rename |
@@ -75,7 +75,9 @@ Notes and tags belong to the concept, so a card that is on several boards has th
 | `Space`, `1` `2` `3` | Cycle status / set status |
 | `W` | What should I learn next? |
 | `↑ ↓ ← →` | Walk the map (up = back toward where you started) |
-| `L` | Link the selected card to another card it needs |
+| `A` | Attach a card: pick one to put under the selected card. `Shift+Enter` puts it above instead, `Ctrl+Enter` moves it there (cuts it from its other parents) |
+| `X` | Detach: cut the selected card from the card above or below it. With several links, pick which one; several selected cards are cut from the rest of the map |
+| `L` | Link the selected card to another card it needs, by clicking it |
 | Drag the dot under a card | Link to a card, or drop on empty space to create a prerequisite |
 | Drag a card | Moves it; its directly linked cards follow. `Ctrl`+drag moves it alone |
 | `Shift`+drag | Select several cards |
@@ -91,6 +93,8 @@ Notes and tags belong to the concept, so a card that is on several boards has th
 
 A topic you add on a new board that you already have on another one is linked to it, so a course board starts out showing what you already understand. Marking it understood, renaming it or editing its notes updates every board it is on. Use `Ctrl+K` → “Link repeated concepts across boards” to link cards you made before this existed, or “Detach from other boards” if two cards only share a name.
 
+On a card's page, the *Needs first* and *Needed for* rows have **+ Add** to attach a card, and hovering a card there shows **×** to detach it. The details sidebar has the same. In `Ctrl+K`, typing a name with a card selected offers both “Add … as a prerequisite” and “Create card … on its own”.
+
 Change the accent color with the dot in the top-right corner. Rename a board by double-clicking its name.
 
 ## In the browser
@@ -103,9 +107,13 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
   - `Shift+Enter` adds it next to that card instead (under the same parent).
   - `Esc` ignores it, and Burrow won't ask about that tab again. `Alt+Shift+B` still adds it later.
   - Clicking into the page leaves the prompt alone. It fades after about 10 seconds, which counts as ignoring it.
+- **Next to, not under.** `Alt+Shift+A` adds next to this tab's card instead of under it: the card goes under the same parent (the one on the breadcrumb). With words selected it makes a card of them; otherwise it adds the page.
+  - Useful after following a link in the same tab: the page you landed on becomes its own card next to the one you came from, the tab moves to it, and the page is taken off the old card's sources. `Alt+Shift+B` does the same but puts it under the old card.
+  - On a card at the top of the board, the new card goes beside it with no parent.
+- **Cards with no parent.** Right-click a page → **Add page on its own (no parent)**, or in the palette (`Alt+Shift+K`) type a name and pick the “on its own” line. The popup offers it for pages that aren't on the map.
 - **Make a card from words.** Select a few words you don't understand and press `Alt+Shift+S` (or right-click → **Make a card from “…”**). They become a card under this tab's card, titled in title case, and nothing opens: you stay where you are. The card keeps the sentence they came from. No prompt, since you asked; `Alt+Shift+Z` undoes it.
 - **Dive into a link.** Right-click a link → **Dive into this link** adds the link's page as a card under this one and opens it in a new tab tied to it. `Alt+Shift+Z` undoes the card and closes the tab.
-- **Read around.** Following links inside a bound tab adds those pages as extra sources of the same card (search result pages don't count). It never makes new cards.
+- **Read around.** Following links inside a bound tab adds those pages as extra sources of the same card (search result pages don't count). It never makes new cards by itself; `Alt+Shift+A` or `Alt+Shift+B` turns the page you're on into one.
 - **The breadcrumb** at the bottom left of every page shows the trail from the top card down to this tab: *BFS / Queue / Linked lists / Doubly linked list · 4 deep*. Click a step to switch to its tab, or to reopen its page. On a tab that isn't on the map it shows where a capture would go. It hides in fullscreen.
   - A card with no page (like *BFS*, which you typed in yourself) opens its notes in Burrow instead. If Burrow isn't open, a small box asks *Burrow isn't open. Show “BFS” there?*: `Enter` starts the app on that card's page, `Esc` (or ignoring it) does nothing.
   - `Ctrl`+click a step to open that card's notes in Burrow instead of its page.
@@ -128,6 +136,7 @@ The extension ties tabs to cards. A tab that shows a card is *bound* to it.
 | Browser shortcut | |
 |---|---|
 | `Alt+Shift+B` | Add this page (under the card it was opened from, or the capture target) |
+| `Alt+Shift+A` | Add next to this card, under its parent: the selected words, else this page |
 | `Alt+Shift+S` | Make a card from the selected words (nothing opens) |
 | `Alt+Shift+N` | Open this tab's card and its notes in Burrow |
 | `Alt+Shift+D` | Understood: close this tab, go to the next one |
