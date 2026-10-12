@@ -17,5 +17,6 @@ Thumbs.db
 .idea/
 # extension build output
 extension/web-ext-artifacts/
+web-ext-artifacts/
 *.xpi
 .amo-upload-uuid

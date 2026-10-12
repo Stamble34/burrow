@@ -162,6 +162,10 @@ Zen only keeps add-ons that Mozilla has signed. It ignores `xpinstall.signatures
 2. Open **Tools → Manage API Keys**, generate credentials, and copy the *JWT issuer* and *JWT secret*.
 3. In a terminal, from the Burrow folder, run:
    ```bash
+   ./sign.sh
+   ```
+   It reads the keys from `~/.config/burrow/amo.env` (`WEB_EXT_API_KEY=…` and `WEB_EXT_API_SECRET=…` on two lines, mode 600, outside the repo). Or run web-ext directly:
+   ```
    npx web-ext sign --channel=unlisted --source-dir extension \
      --api-key="JWT issuer" --api-secret="JWT secret"
    ```
